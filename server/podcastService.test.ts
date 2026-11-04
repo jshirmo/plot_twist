@@ -1,0 +1,86 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  mapFeedToCatalogItem,
+  estimateMoodTags,
+  stripHtml,
+  fallbackPodcasts,
+  searchPodcasts,
+} from './podcastService';
+import { distanceMiles, mapTicketmasterEvent, mapPlace, hasCoords } from './localService';
+
+test('maps a Podcast Index feed into the catalog shape', () => {
+  const item = mapFeedToCatalogItem({
+    id: 920666,
+    title: 'Example Crime Show',
+    author: 'Jane Host',
+    description: '<p>A weekly <b>true crime</b> show &amp; more.</p>',
+    artwork: 'https://example.com/art.jpg',
+    url: 'https://example.com/feed.xml',
+    itunesId: 12345,
+    episodeCount: 210,
+    newestItemPublishTime: Math.floor(Date.now() / 1000),
+    categories: { '1': 'True Crime', '2': 'Society' },
+  });
+  assert.equal(item.id, 'pod_pi_920666');
+  assert.equal(item.mediaType, 'podcast');
+  assert.equal(item.source, 'podcast');
+  assert.equal(item.overview, 'A weekly true crime show & more.');
+  assert.deepEqual(item.genres, ['True Crime', 'Society']);
+  assert.ok(item.streamingProviders?.includes('Apple Podcasts'));
+  assert.equal(item.appleUrl, 'https://podcasts.apple.com/podcast/id12345');
+  assert.ok(item.moodTags.darkness >= 4);
+});
+
+test('mood estimates stay on the 1-5 scale', () => {
+  const tags = estimateMoodTags(['Comedy', 'Horror', 'Romance']);
+  for (const v of Object.values(tags)) assert.ok(v >= 1 && v <= 5);
+});
+
+test('stripHtml removes tags and decodes entities', () => {
+  assert.equal(stripHtml('<a href="x">Hi</a> &quot;there&quot;'), 'Hi "there"');
+});
+
+test('falls back to the fixed podcasts without API keys', async () => {
+  delete process.env.PODCAST_INDEX_KEY;
+  delete process.env.PODCAST_INDEX_SECRET;
+  const results = await searchPodcasts('crime');
+  assert.ok(results.length > 0);
+  assert.ok(results.every((r) => r.mediaType === 'podcast'));
+  assert.ok(fallbackPodcasts().length >= 4);
+});
+
+test('distance between New Orleans and Baton Rouge is about 70 miles', () => {
+  const d = distanceMiles(29.951, -90.071, 30.451, -91.187);
+  assert.ok(d > 65 && d < 80);
+});
+
+test('maps a Ticketmaster event and a Google place', () => {
+  const ev = mapTicketmasterEvent(
+    {
+      id: 'e1',
+      name: 'Podcast Live',
+      url: 'https://ticketmaster.com/e1',
+      dates: { start: { localDate: '2026-12-01', localTime: '19:30:00' } },
+      priceRanges: [{ min: 35, max: 75 }],
+      _embedded: { venues: [{ name: 'Saenger Theatre', city: { name: 'New Orleans' }, state: { stateCode: 'LA' } }] },
+    },
+    { lat: 29.95, lng: -90.07 }
+  );
+  assert.equal(ev.priceRange, '$35–$75');
+  assert.equal(ev.venueCity, 'New Orleans');
+  assert.equal(ev.distanceMiles, undefined);
+
+  const place = mapPlace(
+    { id: 'p1', displayName: { text: 'Octavia Books' }, location: { latitude: 29.93, longitude: -90.11 } },
+    { lat: 29.95, lng: -90.07 }
+  );
+  assert.equal(place.name, 'Octavia Books');
+  assert.ok((place.distanceMiles ?? 0) > 0);
+});
+
+test('rejects invalid coordinates', () => {
+  assert.equal(hasCoords({ lat: 200, lng: 0 }), false);
+  assert.equal(hasCoords({ lat: NaN, lng: 0 }), false);
+  assert.equal(hasCoords({ lat: 29.9, lng: -90.1 }), true);
+});
