@@ -7,7 +7,7 @@ import {
   fallbackPodcasts,
   searchPodcasts,
 } from './podcastService';
-import { distanceMiles, mapTicketmasterEvent, mapPlace, hasCoords } from './localService';
+import { distanceMiles, mapTicketmasterEvent, mapPlace, hasCoords, encodeGeohash } from './localService';
 
 test('maps a Podcast Index feed into the catalog shape', () => {
   const item = mapFeedToCatalogItem({
@@ -83,4 +83,10 @@ test('rejects invalid coordinates', () => {
   assert.equal(hasCoords({ lat: 200, lng: 0 }), false);
   assert.equal(hasCoords({ lat: NaN, lng: 0 }), false);
   assert.equal(hasCoords({ lat: 29.9, lng: -90.1 }), true);
+});
+
+test('encodes a geohash for Ticketmaster geoPoint', () => {
+  // Known value: 57.64911, 10.40744 -> u4pruyd
+  assert.equal(encodeGeohash(57.64911, 10.40744, 7), 'u4pruyd');
+  assert.equal(encodeGeohash(29.951, -90.071, 5), '9vrfq');
 });

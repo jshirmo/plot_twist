@@ -92,6 +92,25 @@ export function distanceMiles(aLat: number, aLng: number, bLat: number, bLng: nu
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Ticketmaster deprecated "latlong" in favor of "geoPoint", which takes a geohash.
+const GEOHASH_CHARS = '0123456789bcdefghjkmnpqrstuvwxyz';
+export function encodeGeohash(lat: number, lng: number, precision = 7): string {
+  let latMin = -90, latMax = 90, lngMin = -180, lngMax = 180;
+  let hash = '', bit = 0, ch = 0, evenBit = true;
+  while (hash.length < precision) {
+    if (evenBit) {
+      const mid = (lngMin + lngMax) / 2;
+      if (lng >= mid) { ch = (ch << 1) | 1; lngMin = mid; } else { ch = ch << 1; lngMax = mid; }
+    } else {
+      const mid = (latMin + latMax) / 2;
+      if (lat >= mid) { ch = (ch << 1) | 1; latMin = mid; } else { ch = ch << 1; latMax = mid; }
+    }
+    evenBit = !evenBit;
+    if (++bit === 5) { hash += GEOHASH_CHARS[ch]; bit = 0; ch = 0; }
+  }
+  return hash;
+}
+
 // ---------- Ticketmaster: live podcast shows & events ----------
 
 interface RawTmEvent {
@@ -156,14 +175,14 @@ async function ticketmasterSearch(keyword: string, loc: LocationQuery, size: num
     sort: 'date,asc',
   });
   if (hasCoords(loc)) {
-    params.set('latlong', `${round(loc.lat)},${round(loc.lng)}`);
+    params.set('geoPoint', encodeGeohash(loc.lat, loc.lng, 7));
     params.set('radius', '75');
     params.set('unit', 'miles');
   } else if (loc.city) {
     params.set('city', loc.city);
   }
 
-  const key = `tm:${keyword}:${params.get('latlong') || params.get('city')}:${size}`;
+  const key = `tm:${keyword}:${params.get('geoPoint') || params.get('city')}:${size}`;
   return cached(key, async () => {
     const res = await fetch(`${TICKETMASTER_BASE}?${params.toString()}`, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
