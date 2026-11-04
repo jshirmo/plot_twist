@@ -1,0 +1,10 @@
+{
+  "name": "Plot Twist",
+  "description": "AI-powered entertainment discovery across books, movies, TV shows, and podcasts based on mood, taste, and story elements.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

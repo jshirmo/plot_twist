@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // User Profiles: private to the authenticated owner
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        incoming().userId == request.auth.uid &&
+        incoming().keys().hasAll(['userId', 'onboardingCompleted']) &&
+        incoming().userId is string &&
+        incoming().userId.size() <= 128;
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        incoming().userId == existing().userId &&
+        incoming().userId == request.auth.uid;
+      allow delete: if isOwner(userId);
+    }
+
+    // Saved Media (Watchlist & Personal Library)
+    match /savedMedia/{savedMediaId} {
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() &&
+        isValidId(savedMediaId) &&
+        incoming().userId == request.auth.uid &&
+        incoming().keys().hasAll(['userId', 'mediaId', 'mediaType', 'title', 'status']) &&
+        incoming().title is string && incoming().title.size() <= 256 &&
+        incoming().mediaId is string && incoming().mediaId.size() <= 128 &&
+        incoming().status in ['watchlist', 'completed', 'reading', 'watching', 'listening', 'passed'];
+      allow update: if isSignedIn() &&
+        isValidId(savedMediaId) &&
+        existing().userId == request.auth.uid &&
+        incoming().userId == existing().userId &&
+        incoming().status in ['watchlist', 'completed', 'reading', 'watching', 'listening', 'passed'];
+      allow delete: if isSignedIn() &&
+        isValidId(savedMediaId) &&
+        existing().userId == request.auth.uid;
+    }
+
+    // Swipe History (Movie swipe decisions)
+    match /swipeHistory/{swipeId} {
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() &&
+        isValidId(swipeId) &&
+        incoming().userId == request.auth.uid &&
+        incoming().keys().hasAll(['userId', 'mediaId', 'decision', 'feedbackStatus']) &&
+        incoming().mediaId is string && incoming().mediaId.size() <= 128 &&
+        incoming().decision in ['interested', 'pass'] &&
+        incoming().feedbackStatus in ['active', 'reversed'];
+      allow update: if isSignedIn() &&
+        isValidId(swipeId) &&
+        existing().userId == request.auth.uid &&
+        incoming().userId == existing().userId &&
+        incoming().feedbackStatus in ['active', 'reversed'];
+      allow delete: if isSignedIn() &&
+        isValidId(swipeId) &&
+        existing().userId == request.auth.uid;
+    }
+
+    // Groups (Shared collaborative recommendations)
+    match /groups/{groupId} {
+      allow get: if isSignedIn() && (
+        request.auth.uid in resource.data.memberIds ||
+        resource.data.ownerId == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        request.auth.uid in resource.data.memberIds ||
+        resource.data.ownerId == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+        isValidId(groupId) &&
+        incoming().ownerId == request.auth.uid &&
+        request.auth.uid in incoming().memberIds &&
+        incoming().keys().hasAll(['name', 'ownerId', 'inviteCode', 'memberIds']) &&
+        incoming().name is string && incoming().name.size() <= 128 &&
+        incoming().inviteCode is string && incoming().inviteCode.size() <= 32;
+      allow update: if isSignedIn() &&
+        isValidId(groupId) &&
+        incoming().ownerId == existing().ownerId &&
+        (
+          existing().ownerId == request.auth.uid ||
+          request.auth.uid in existing().memberIds ||
+          request.auth.uid in incoming().memberIds
+        );
+      allow delete: if isSignedIn() &&
+        isValidId(groupId) &&
+        existing().ownerId == request.auth.uid;
+    }
+  }
+}

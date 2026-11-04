@@ -1,0 +1,94 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with taste preferences and onboarding status",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "photoURL": { "type": "string", "maxLength": 1024 },
+        "onboardingCompleted": { "type": "boolean" },
+        "tasteProfile": {
+          "type": "object",
+          "description": "Taste preferences questionnaire answers and summary"
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "onboardingCompleted"]
+    },
+    "SavedMedia": {
+      "title": "SavedMedia",
+      "description": "Media item saved to personal library or watchlist",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "mediaId": { "type": "string", "maxLength": 128 },
+        "mediaType": { "type": "string", "enum": ["movie", "tv", "book", "podcast"] },
+        "title": { "type": "string", "maxLength": 256 },
+        "posterUrl": { "type": "string", "maxLength": 1024 },
+        "creator": { "type": "string", "maxLength": 256 },
+        "releaseYear": { "type": "string", "maxLength": 32 },
+        "genres": { "type": "array" },
+        "status": { "type": "string", "enum": ["watchlist", "completed", "reading", "watching", "listening", "passed"] },
+        "rating": { "type": "string", "enum": ["liked", "disliked", "neutral", "none"] },
+        "userNotes": { "type": "string", "maxLength": 2048 },
+        "source": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "mediaId", "mediaType", "title", "status"]
+    },
+    "SwipeDecision": {
+      "title": "SwipeDecision",
+      "description": "Record of a movie swipe right or left",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "mediaId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 256 },
+        "posterUrl": { "type": "string", "maxLength": 1024 },
+        "mediaType": { "type": "string", "maxLength": 32 },
+        "decision": { "type": "string", "enum": ["interested", "pass"] },
+        "feedbackStatus": { "type": "string", "enum": ["active", "reversed"] },
+        "genres": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "mediaId", "decision", "feedbackStatus"]
+    },
+    "GroupItem": {
+      "title": "GroupItem",
+      "description": "Collaborative group for shared recommendations",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 128, "minLength": 1 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "inviteCode": { "type": "string", "maxLength": 32 },
+        "memberIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "ownerId", "inviteCode", "memberIds"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile with taste preferences"
+    },
+    "/savedMedia/{savedMediaId}": {
+      "schema": "SavedMedia",
+      "description": "Saved media item in user watchlist or library"
+    },
+    "/swipeHistory/{swipeId}": {
+      "schema": "SwipeDecision",
+      "description": "User movie swipe decisions"
+    },
+    "/groups/{groupId}": {
+      "schema": "GroupItem",
+      "description": "Group for collective entertainment recommendations"
+    }
+  }
+}
