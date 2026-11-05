@@ -23,6 +23,7 @@ type TmdbItem = {
 };
 
 const TMDB_IMAGE = 'https://image.tmdb.org/t/p/w500';
+const CANDIDATES_PER_SOURCE = 16;
 
 function moodTagsFromGenres(genres: string[], mood: MoodSettings) {
   const text = genres.join(' ').toLowerCase();
@@ -94,7 +95,7 @@ async function fetchTmdbCandidates(type: 'movie' | 'tv', request: CatalogRequest
     tmdb(`/discover/${type}?include_adult=false&sort_by=popularity.desc&page=1`),
   ]);
   const results = (discover as { results?: TmdbItem[] }).results ?? [];
-  const candidates = await Promise.all(results.slice(0, 12).map(async (item) => {
+  const candidates = await Promise.all(results.slice(0, CANDIDATES_PER_SOURCE).map(async (item) => {
     try {
       const [details, providers] = await Promise.all([
         tmdb(`/${type}/${item.id}?append_to_response=credits`),
@@ -140,7 +141,7 @@ async function fetchBookCandidates(request: CatalogRequest): Promise<CatalogMedi
   const url = new URL('https://www.googleapis.com/books/v1/volumes');
   url.searchParams.set('q', `subject:${queryTerms(request.taste, request.mood)}`);
   url.searchParams.set('printType', 'books');
-  url.searchParams.set('maxResults', '12');
+  url.searchParams.set('maxResults', String(CANDIDATES_PER_SOURCE));
   url.searchParams.set('country', request.availabilityRegion);
   if (process.env.GOOGLE_BOOKS_API_KEY) url.searchParams.set('key', process.env.GOOGLE_BOOKS_API_KEY);
   const response = await fetch(url, { signal: AbortSignal.timeout(7000) });
@@ -175,7 +176,7 @@ async function fetchPodcastCandidates(request: CatalogRequest): Promise<CatalogM
   url.searchParams.set('media', 'podcast');
   url.searchParams.set('entity', 'podcast');
   url.searchParams.set('country', request.availabilityRegion);
-  url.searchParams.set('limit', '12');
+  url.searchParams.set('limit', String(CANDIDATES_PER_SOURCE));
   const response = await fetch(url, { signal: AbortSignal.timeout(7000) });
   if (!response.ok) throw new Error(`Apple Podcasts catalog request failed (${response.status})`);
   const data = await response.json() as { results?: Array<Record<string, unknown>> };

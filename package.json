@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test server/mediaCatalog.test.ts server/geminiService.test.ts"
+    "test": "tsx --test server/mediaCatalog.test.ts server/geminiService.test.ts server/authProfileService.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

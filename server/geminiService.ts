@@ -24,6 +24,8 @@ export interface RecommendationResponse {
   usedFallback: boolean;
 }
 
+const MAX_RECOMMENDATIONS = 12;
+
 function resultFromCandidate(candidate: CatalogMediaItem, score: number, explanation: string): RecommendationResult {
   return {
     id: candidate.id,
@@ -62,7 +64,9 @@ export function rankCandidatesLocally(
       : `A verified ${item.mediaType} pick matched to your current mood settings and story preferences.`;
     return resultFromCandidate(item, score, reason);
   });
-  return scored.sort((left, right) => right.compatibilityScore - left.compatibilityScore).slice(0, 6);
+  return scored
+    .sort((left, right) => right.compatibilityScore - left.compatibilityScore)
+    .slice(0, MAX_RECOMMENDATIONS);
 }
 
 export async function generateRecommendations(params: {
@@ -80,7 +84,7 @@ export async function generateRecommendations(params: {
     id: candidate.id, mediaType: candidate.mediaType, title: candidate.title, creator: candidate.creator,
     genres: candidate.genres, overview: candidate.overview.slice(0, 500),
   }));
-  const prompt = `Rank only the verified catalog candidates below for this Plot Twist user. Do not create, rename, or add a title, creator, provider, or catalog ID. Return at most 6 candidates.
+  const prompt = `Rank only the verified catalog candidates below for this Plot Twist user. Do not create, rename, or add a title, creator, provider, or catalog ID. Return at most ${MAX_RECOMMENDATIONS} candidates.
 
 Mood (1-5): darkness ${params.moodSettings.darkness}, romance ${params.moodSettings.romance}, suspense ${params.moodSettings.suspense}, plot twists ${params.moodSettings.plotTwists}, emotional intensity ${params.moodSettings.emotionalIntensity}.
 Taste: preferred genres ${params.tasteProfile.preferredGenres.join(', ') || 'not set'}; disliked genres ${params.tasteProfile.dislikedGenres.join(', ') || 'none'}; favorite stories ${params.tasteProfile.favoriteStories.join(', ') || 'not set'}; preferred story elements ${params.tasteProfile.storyElements.join(', ') || 'not set'}.
@@ -113,7 +117,7 @@ Candidates: ${JSON.stringify(summaries)}`;
       return [resultFromCandidate(candidate, typeof rank.compatibilityScore === 'number' ? rank.compatibilityScore : 80,
         typeof rank.aiExplanation === 'string' ? rank.aiExplanation : 'A verified match for your current mood and saved taste profile.')];
     });
-    if (verified.length > 0) return { results: verified.slice(0, 6), usedFallback: false };
+    if (verified.length > 0) return { results: verified.slice(0, MAX_RECOMMENDATIONS), usedFallback: false };
   } catch (error) {
     console.error('Gemini ranking failed; returning verified local ranking.', error);
   }

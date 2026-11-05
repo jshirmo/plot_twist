@@ -40,6 +40,19 @@ test('a disliked genre lowers a candidate score without inventing a replacement 
   assert.ok(results.find((result) => result.id === 'tmdb:movie:mystery')!.compatibilityScore < 99);
 });
 
+test('the recommendation engine can return twelve verified titles', () => {
+  const expandedCandidates = Array.from({ length: 13 }, (_, index) => ({
+    ...candidates[index % candidates.length],
+    id: `verified-${index}`,
+    catalogId: `catalog-${index}`,
+    title: `Verified title ${index}`,
+  }));
+
+  const results = rankCandidatesLocally(expandedCandidates, mood, profile({ preferredGenres: ['Mystery'] }));
+  assert.equal(results.length, 12);
+  assert.equal(results.every((result) => expandedCandidates.some((candidate) => candidate.id === result.id)), true);
+});
+
 test('Gemini failure configuration falls back to verified local ranking', async () => {
   const originalKey = process.env.GEMINI_API_KEY;
   delete process.env.GEMINI_API_KEY;
