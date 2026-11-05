@@ -2,11 +2,13 @@
 // Owner: Chloe. Ben's catalog can call getPodcastCandidates() to get real podcasts in the
 // same CatalogMediaItem shape the rest of the app already uses.
 //
-// Needs PODCAST_INDEX_KEY and PODCAST_INDEX_SECRET in .env (free at https://api.podcastindex.org).
-// Without them, every function falls back to the fixed podcasts in mediaCatalog.ts.
+// Uses Podcast Index when PODCAST_INDEX_KEY and PODCAST_INDEX_SECRET are set in .env.
+// Without them it uses Apple Podcasts (applePodcasts.ts, no key needed), and if that fails,
+// the fixed podcasts in mediaCatalog.ts.
 
 import { createHash } from 'crypto';
 import { CatalogMediaItem, VERIFIED_CATALOG } from './mediaCatalog';
+import { appleSearchPodcasts, appleTopPodcasts, appleEpisodes } from './applePodcasts';
 
 const API_BASE = 'https://api.podcastindex.org/api/1.0';
 const USER_AGENT = 'PlotTwist/1.0 (DATA 2150 class project)';
@@ -247,11 +249,28 @@ export function fallbackPodcasts(term?: string): PodcastCatalogItem[] {
 }
 
 // ---------- Public functions ----------
+// Order: Podcast Index (if its keys are set) -> Apple Podcasts (no key needed) -> fixed list.
+
+export function podcastSource(): 'podcastindex' | 'apple' {
+  return isPodcastIndexConfigured() ? 'podcastindex' : 'apple';
+}
+
+async function fromApple<T>(label: string, load: () => Promise<T[]>, fallback: () => T[]): Promise<T[]> {
+  try {
+    const items = await load();
+    return items.length ? items : fallback();
+  } catch (err) {
+    console.error(`Apple Podcasts ${label} failed, using fallback:`, (err as Error).message);
+    return fallback();
+  }
+}
 
 export async function searchPodcasts(term: string, max = 20): Promise<PodcastCatalogItem[]> {
   const q = term.trim().slice(0, 100);
   if (!q) return getTrendingPodcasts(max);
-  if (!isPodcastIndexConfigured()) return fallbackPodcasts(q).slice(0, max);
+  if (!isPodcastIndexConfigured()) {
+    return fromApple('search', () => appleSearchPodcasts(q, max), () => fallbackPodcasts(q).slice(0, max));
+  }
   try {
     const data = await podcastIndexGet<{ feeds?: RawFeed[] }>('/search/byterm', {
       q,
@@ -260,13 +279,15 @@ export async function searchPodcasts(term: string, max = 20): Promise<PodcastCat
     const items = (data.feeds || []).map(mapFeedToCatalogItem).filter(isUsable);
     return items.length ? items.slice(0, max) : fallbackPodcasts(q);
   } catch (err) {
-    console.error('Podcast search failed, using fallback:', (err as Error).message);
-    return fallbackPodcasts(q);
+    console.error('Podcast search failed, trying Apple:', (err as Error).message);
+    return fromApple('search', () => appleSearchPodcasts(q, max), () => fallbackPodcasts(q).slice(0, max));
   }
 }
 
 export async function getTrendingPodcasts(max = 20, category?: string): Promise<PodcastCatalogItem[]> {
-  if (!isPodcastIndexConfigured()) return fallbackPodcasts().slice(0, max);
+  if (!isPodcastIndexConfigured()) {
+    return fromApple('top chart', () => appleTopPodcasts(max, category), () => fallbackPodcasts().slice(0, max));
+  }
   try {
     const data = await podcastIndexGet<{ feeds?: RawFeed[] }>('/podcasts/trending', {
       max: Math.min(max * 2, 60),
@@ -276,13 +297,16 @@ export async function getTrendingPodcasts(max = 20, category?: string): Promise<
     const items = (data.feeds || []).map(mapFeedToCatalogItem).filter(isUsable);
     return items.length ? items.slice(0, max) : fallbackPodcasts();
   } catch (err) {
-    console.error('Trending podcasts failed, using fallback:', (err as Error).message);
-    return fallbackPodcasts();
+    console.error('Trending podcasts failed, trying Apple:', (err as Error).message);
+    return fromApple('top chart', () => appleTopPodcasts(max, category), () => fallbackPodcasts().slice(0, max));
   }
 }
 
 export async function getPodcastEpisodes(feedId: string, max = 10): Promise<PodcastEpisode[]> {
-  if (!isPodcastIndexConfigured() || !/^\d+$/.test(feedId)) return [];
+  if (!/^\d+$/.test(feedId)) return [];
+  if (!isPodcastIndexConfigured()) {
+    return fromApple('episodes', () => appleEpisodes(feedId, max), () => []);
+  }
   try {
     const data = await podcastIndexGet<{ items?: RawEpisode[] }>('/episodes/byfeedid', {
       id: feedId,

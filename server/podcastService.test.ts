@@ -7,6 +7,7 @@ import {
   fallbackPodcasts,
   searchPodcasts,
 } from './podcastService';
+import { mapApplePodcast, mapTopPodcast, mapAppleEpisode, biggerArtwork } from './applePodcasts';
 import { distanceMiles, mapTicketmasterEvent, mapPlace, hasCoords, encodeGeohash } from './localService';
 
 test('maps a Podcast Index feed into the catalog shape', () => {
@@ -41,7 +42,7 @@ test('stripHtml removes tags and decodes entities', () => {
   assert.equal(stripHtml('<a href="x">Hi</a> &quot;there&quot;'), 'Hi "there"');
 });
 
-test('falls back to the fixed podcasts without API keys', async () => {
+test('without any keys, search still returns podcasts (Apple, or the fixed list if offline)', async () => {
   delete process.env.PODCAST_INDEX_KEY;
   delete process.env.PODCAST_INDEX_SECRET;
   const results = await searchPodcasts('crime');
@@ -89,4 +90,32 @@ test('encodes a geohash for Ticketmaster geoPoint', () => {
   // Known value: 57.64911, 10.40744 -> u4pruyd
   assert.equal(encodeGeohash(57.64911, 10.40744, 7), 'u4pruyd');
   assert.equal(encodeGeohash(29.951, -90.071, 5), '9vrfq');
+});
+
+test('maps Apple Podcasts search results, chart entries and episodes', () => {
+  const pod = mapApplePodcast({
+    collectionId: 1200361736,
+    collectionName: 'The Daily',
+    artistName: 'The New York Times',
+    artworkUrl100: 'https://is1-ssl.mzstatic.com/image/thumb/a/b/100x100bb.jpg',
+    genres: ['Daily News', 'Podcasts', 'News'],
+    collectionViewUrl: 'https://podcasts.apple.com/us/podcast/the-daily/id1200361736',
+    releaseDate: '2026-11-04T10:00:00Z',
+    trackCount: 300,
+  });
+  assert.ok(pod);
+  assert.equal(pod!.id, 'pod_ap_1200361736');
+  assert.equal(pod!.posterUrl, 'https://is1-ssl.mzstatic.com/image/thumb/a/b/600x600bb.jpg');
+  assert.deepEqual(pod!.genres, ['Daily News', 'News']);
+  assert.equal(pod!.releaseYear, '2026');
+
+  const top = mapTopPodcast({ id: '123', name: 'Top Show', artistName: 'Host', genres: [{ name: 'True Crime' }] });
+  assert.equal(top!.moodTags.darkness, 4);
+
+  const ep = mapAppleEpisode({ trackId: 9, trackName: 'Ep 1', trackTimeMillis: 1_800_000, description: '<p>Hi</p>' });
+  assert.equal(ep!.durationMinutes, 30);
+  assert.equal(ep!.description, 'Hi');
+
+  assert.equal(mapApplePodcast({ artistName: 'No id' }), null);
+  assert.equal(biggerArtwork('https://x/y/60x60bb.png'), 'https://x/y/600x600bb.png');
 });

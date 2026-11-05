@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { generateRecommendations, scanMediaPosterOrCover } from './geminiService';
 import { VERIFIED_CATALOG } from './mediaCatalog';
-import { searchPodcasts, getTrendingPodcasts, getPodcastEpisodes, isPodcastIndexConfigured } from './podcastService';
+import { searchPodcasts, getTrendingPodcasts, getPodcastEpisodes, podcastSource } from './podcastService';
 import { getLiveEvents, getNearbyBookstores, localServiceStatus, type LocationQuery } from './localService';
 
 export const apiRouter = Router();
@@ -133,13 +133,13 @@ function localError(res: Response, error: unknown, label: string) {
 apiRouter.get('/podcasts/search', async (req: Request, res: Response) => {
   const q = cleanText(req.query.q);
   const results = await searchPodcasts(q, toInt(req.query.max, 20, 40));
-  return res.json({ results, live: isPodcastIndexConfigured() });
+  return res.json({ results, source: podcastSource() });
 });
 
 // Trending podcasts: GET /api/podcasts/trending?max=20&category=True%20Crime
 apiRouter.get('/podcasts/trending', async (req: Request, res: Response) => {
   const results = await getTrendingPodcasts(toInt(req.query.max, 20, 40), cleanText(req.query.category, 60) || undefined);
-  return res.json({ results, live: isPodcastIndexConfigured() });
+  return res.json({ results, source: podcastSource() });
 });
 
 // Latest episodes for a podcast: GET /api/podcasts/123456/episodes?max=10
