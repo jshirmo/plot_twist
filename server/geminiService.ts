@@ -1,15 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { CatalogMediaItem, VERIFIED_CATALOG, getFilteredCatalogCandidates } from './mediaCatalog';
-import { MoodSettings, TasteProfile } from '../src/types';
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
+import type { MoodSettings, TasteProfile } from '../src/types';
+import type { CatalogMediaItem } from './mediaCatalog';
 
 export interface RecommendationResult {
   catalogId: string;
@@ -21,143 +12,35 @@ export interface RecommendationResult {
   posterUrl: string;
   genres: string[];
   runtimeMinutes?: number;
+  pageCount?: number;
   overview: string;
   streamingProviders?: string[];
   compatibilityScore: number;
   aiExplanation: string;
 }
 
-export async function generateRecommendations(params: {
-  tasteProfile?: TasteProfile;
-  moodSettings: MoodSettings;
-  formats?: string[];
-  maxDurationMinutes?: number;
-  streamingServices?: string[];
-  excludedMediaIds?: string[];
-}): Promise<RecommendationResult[]> {
-  // Step 1: Filter verified candidates strictly
-  let candidates = getFilteredCatalogCandidates({
-    formats: params.formats,
-    maxDurationMinutes: params.maxDurationMinutes,
-    streamingServices: params.streamingServices,
-  });
+export interface RecommendationResponse {
+  results: RecommendationResult[];
+  usedFallback: boolean;
+}
 
-  // Exclude already rejected or watched titles
-  if (params.excludedMediaIds && params.excludedMediaIds.length > 0) {
-    candidates = candidates.filter((c) => !params.excludedMediaIds!.includes(c.id));
-  }
-
-  if (candidates.length === 0) {
-    // Fallback to all candidates if filters were too restrictive
-    candidates = VERIFIED_CATALOG.filter((c) => !params.excludedMediaIds?.includes(c.id));
-  }
-
-  // If no Gemini key is provided, return smart rule-based ranking
-  if (!process.env.GEMINI_API_KEY) {
-    return rankCandidatesLocally(candidates, params.moodSettings, params.tasteProfile);
-  }
-
-  try {
-    const candidateSummary = candidates.map((c) => ({
-      id: c.id,
-      title: c.title,
-      mediaType: c.mediaType,
-      creator: c.creator,
-      genres: c.genres,
-      overview: c.overview,
-      moodTags: c.moodTags,
-    }));
-
-    const prompt = `You are the recommendation engine for Plot Twist, an entertainment platform combining Books, Movies, TV, and Podcasts.
-Evaluate the candidate media titles below against the user's taste profile and current mood sliders.
-
-Current Mood Sliders (1 to 5 scale):
-- Darkness: ${params.moodSettings.darkness} (1=Light/uplifting, 5=Dark/intense)
-- Romance: ${params.moodSettings.romance} (1=No romance, 5=Romance-heavy)
-- Suspense: ${params.moodSettings.suspense} (1=Relaxed, 5=Extremely suspenseful)
-- Plot Twists: ${params.moodSettings.plotTwists} (1=Straightforward, 5=Full of surprises)
-- Emotional Intensity: ${params.moodSettings.emotionalIntensity} (1=Easygoing, 5=Deeply intense)
-
-User Taste Profile:
-- Preferred Genres: ${(params.tasteProfile?.preferredGenres || []).join(', ') || 'Eclectic'}
-- Disliked Genres: ${(params.tasteProfile?.dislikedGenres || []).join(', ') || 'None'}
-- Favorite Stories: ${(params.tasteProfile?.favoriteStories || []).join(', ') || 'Diverse'}
-- Story Elements Enjoyed: ${(params.tasteProfile?.storyElements || []).join(', ') || 'Surprises, depth'}
-
-CRITICAL RULES:
-1. ONLY evaluate and rank the candidates provided in the JSON list below. NEVER invent or fabricate any title or author.
-2. Provide a 'compatibilityScore' between 60 and 99 reflecting how well it matches their specific mood and taste.
-3. Provide a concise, engaging, spoiler-free 'aiExplanation' (1-2 sentences) explaining WHY this matches their current mood and taste.
-4. Return up to 6 of the best matching candidates ordered by match score.
-
-Candidates JSON:
-${JSON.stringify(candidateSummary, null, 2)}`;
-
-    // Set 6-second timeout race to ensure fast, reliable response
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Gemini API timeout')), 6000)
-    );
-
-    const callPromise = ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        systemInstruction: 'You are an expert entertainment curator. Always return strictly valid JSON matching the requested schema. Never invent media titles.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING, description: 'Candidate ID from the input list' },
-              compatibilityScore: { type: Type.INTEGER, description: 'Match score between 60 and 99' },
-              aiExplanation: { type: Type.STRING, description: '1-2 sentence personalized explanation' },
-            },
-            required: ['id', 'compatibilityScore', 'aiExplanation'],
-          },
-        },
-      },
-    });
-
-    const response = await Promise.race([callPromise, timeoutPromise]);
-    const parsed = JSON.parse(response.text || '[]') as Array<{
-      id: string;
-      compatibilityScore: number;
-      aiExplanation: string;
-    }>;
-
-    // Validate that every returned ID belongs to a real candidate from our verified catalog
-    const verifiedResults: RecommendationResult[] = [];
-    for (const item of parsed) {
-      const match = candidates.find((c) => c.id === item.id);
-      if (match) {
-        verifiedResults.push({
-          id: match.id,
-          catalogId: match.catalogId,
-          title: match.title,
-          mediaType: match.mediaType,
-          creator: match.creator,
-          releaseYear: match.releaseYear,
-          posterUrl: match.posterUrl,
-          genres: match.genres,
-          runtimeMinutes: match.runtimeMinutes,
-          overview: match.overview,
-          streamingProviders: match.streamingProviders,
-          compatibilityScore: item.compatibilityScore || 85,
-          aiExplanation: item.aiExplanation || `Selected based on your mood for ${match.genres.join(', ')}.`,
-        });
-      }
-    }
-
-    if (verifiedResults.length > 0) {
-      return verifiedResults;
-    }
-
-    return rankCandidatesLocally(candidates, params.moodSettings, params.tasteProfile);
-  } catch (error) {
-    console.error('Gemini recommendation error or timeout, using local ranking:', error);
-    return rankCandidatesLocally(candidates, params.moodSettings, params.tasteProfile);
-  }
+function resultFromCandidate(candidate: CatalogMediaItem, score: number, explanation: string): RecommendationResult {
+  return {
+    id: candidate.id,
+    catalogId: candidate.catalogId,
+    title: candidate.title,
+    mediaType: candidate.mediaType,
+    creator: candidate.creator,
+    releaseYear: candidate.releaseYear,
+    posterUrl: candidate.posterUrl,
+    genres: candidate.genres,
+    runtimeMinutes: candidate.runtimeMinutes,
+    pageCount: candidate.pageCount,
+    overview: candidate.overview,
+    streamingProviders: candidate.streamingProviders,
+    compatibilityScore: Math.max(60, Math.min(99, Math.round(score))),
+    aiExplanation: explanation.slice(0, 320),
+  };
 }
 
 export function rankCandidatesLocally(
@@ -166,93 +49,84 @@ export function rankCandidatesLocally(
   taste?: TasteProfile
 ): RecommendationResult[] {
   const scored = candidates.map((item) => {
-    // Calculate distance between user mood and item moodTags
-    const darknessDiff = Math.abs(item.moodTags.darkness - mood.darkness);
-    const romanceDiff = Math.abs(item.moodTags.romance - mood.romance);
-    const suspenseDiff = Math.abs(item.moodTags.suspense - mood.suspense);
-    const twistDiff = Math.abs(item.moodTags.plotTwists - mood.plotTwists);
-    const emotionDiff = Math.abs(item.moodTags.emotionalIntensity - mood.emotionalIntensity);
-
-    const totalDiff = darknessDiff + romanceDiff + suspenseDiff + twistDiff + emotionDiff;
-    const moodScore = Math.max(60, Math.round(99 - totalDiff * 2.5));
-
-    let genreBoost = 0;
-    if (taste?.preferredGenres) {
-      const matches = item.genres.filter((g) =>
-        taste.preferredGenres.some((pg) => pg.toLowerCase() === g.toLowerCase())
-      );
-      genreBoost = matches.length * 3;
-    }
-
-    const finalScore = Math.min(99, moodScore + genreBoost);
-
-    return {
-      id: item.id,
-      catalogId: item.catalogId,
-      title: item.title,
-      mediaType: item.mediaType,
-      creator: item.creator,
-      releaseYear: item.releaseYear,
-      posterUrl: item.posterUrl,
-      genres: item.genres,
-      runtimeMinutes: item.runtimeMinutes,
-      overview: item.overview,
-      streamingProviders: item.streamingProviders,
-      compatibilityScore: finalScore,
-      aiExplanation: `Matches your mood for ${item.genres[0] || 'storytelling'} with a plot twist profile tailored for you.`,
-    };
+    const tags = item.moodTags;
+    const totalDiff = Math.abs(tags.darkness - mood.darkness) + Math.abs(tags.romance - mood.romance) +
+      Math.abs(tags.suspense - mood.suspense) + Math.abs(tags.plotTwists - mood.plotTwists) +
+      Math.abs(tags.emotionalIntensity - mood.emotionalIntensity);
+    const preferredMatches = item.genres.filter((genre) => taste?.preferredGenres.some((preferred) => preferred.toLowerCase() === genre.toLowerCase())).length;
+    const dislikedMatches = item.genres.filter((genre) => taste?.dislikedGenres.some((disliked) => disliked.toLowerCase() === genre.toLowerCase())).length;
+    const score = 94 - totalDiff * 3 + preferredMatches * 5 - dislikedMatches * 12;
+    const matchingGenre = item.genres.find((genre) => taste?.preferredGenres.some((preferred) => preferred.toLowerCase() === genre.toLowerCase()));
+    const reason = matchingGenre
+      ? `A verified ${item.mediaType} pick that pairs your current mood with your interest in ${matchingGenre}.`
+      : `A verified ${item.mediaType} pick matched to your current mood settings and story preferences.`;
+    return resultFromCandidate(item, score, reason);
   });
+  return scored.sort((left, right) => right.compatibilityScore - left.compatibilityScore).slice(0, 6);
+}
 
-  scored.sort((a, b) => b.compatibilityScore - a.compatibilityScore);
-  return scored.slice(0, 6);
+export async function generateRecommendations(params: {
+  tasteProfile: TasteProfile;
+  moodSettings: MoodSettings;
+  candidates: CatalogMediaItem[];
+}): Promise<RecommendationResponse> {
+  if (params.candidates.length === 0) return { results: [], usedFallback: true };
+  if (!process.env.GEMINI_API_KEY) {
+    return { results: rankCandidatesLocally(params.candidates, params.moodSettings, params.tasteProfile), usedFallback: true };
+  }
+
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const summaries = params.candidates.map((candidate) => ({
+    id: candidate.id, mediaType: candidate.mediaType, title: candidate.title, creator: candidate.creator,
+    genres: candidate.genres, overview: candidate.overview.slice(0, 500),
+  }));
+  const prompt = `Rank only the verified catalog candidates below for this Plot Twist user. Do not create, rename, or add a title, creator, provider, or catalog ID. Return at most 6 candidates.
+
+Mood (1-5): darkness ${params.moodSettings.darkness}, romance ${params.moodSettings.romance}, suspense ${params.moodSettings.suspense}, plot twists ${params.moodSettings.plotTwists}, emotional intensity ${params.moodSettings.emotionalIntensity}.
+Taste: preferred genres ${params.tasteProfile.preferredGenres.join(', ') || 'not set'}; disliked genres ${params.tasteProfile.dislikedGenres.join(', ') || 'none'}; favorite stories ${params.tasteProfile.favoriteStories.join(', ') || 'not set'}; preferred story elements ${params.tasteProfile.storyElements.join(', ') || 'not set'}.
+
+For each choice, give a short spoiler-free explanation based only on the title's provided metadata and the user’s mood/taste.
+Candidates: ${JSON.stringify(summaries)}`;
+
+  try {
+    const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Gemini timed out')), 8000));
+    const call = ai.models.generateContent({
+      model: process.env.GEMINI_MODEL || 'gemini-2.5-flash', contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          items: { type: Type.OBJECT, properties: {
+            id: { type: Type.STRING }, compatibilityScore: { type: Type.INTEGER }, aiExplanation: { type: Type.STRING },
+          }, required: ['id', 'compatibilityScore', 'aiExplanation'] },
+        },
+      },
+    });
+    const response = await Promise.race([call, timeout]);
+    const ranked = JSON.parse(response.text || '[]') as Array<{ id?: unknown; compatibilityScore?: unknown; aiExplanation?: unknown }>;
+    const seen = new Set<string>();
+    const verified = ranked.flatMap((rank) => {
+      if (typeof rank.id !== 'string' || seen.has(rank.id)) return [];
+      const candidate = params.candidates.find((item) => item.id === rank.id);
+      if (!candidate) return [];
+      seen.add(rank.id);
+      return [resultFromCandidate(candidate, typeof rank.compatibilityScore === 'number' ? rank.compatibilityScore : 80,
+        typeof rank.aiExplanation === 'string' ? rank.aiExplanation : 'A verified match for your current mood and saved taste profile.')];
+    });
+    if (verified.length > 0) return { results: verified.slice(0, 6), usedFallback: false };
+  } catch (error) {
+    console.error('Gemini ranking failed; returning verified local ranking.', error);
+  }
+  return { results: rankCandidatesLocally(params.candidates, params.moodSettings, params.tasteProfile), usedFallback: true };
 }
 
 export async function scanMediaPosterOrCover(imageBase64: string, mimeType: string) {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY is not configured on the server');
-  }
-
-  const prompt = `Analyze this image of a book cover, movie poster, or media title.
-Identify the exact title, creator/author/director, media format (book, movie, tv, or podcast), and primary genres.
-Also evaluate whether this is a recognizable media title.
-Return strictly a JSON object with:
-- title: string (the exact recognized title)
-- creator: string (author or director)
-- mediaType: 'movie' | 'tv' | 'book' | 'podcast'
-- genres: string[]
-- summary: string (short description)
-- confidence: number (0-100)
-If the image does not show a recognizable media title, set confidence below 40.`;
-
+  if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server');
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
-    contents: {
-      parts: [
-        {
-          inlineData: {
-            mimeType: mimeType || 'image/jpeg',
-            data: imageBase64,
-          },
-        },
-        { text: prompt },
-      ],
-    },
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          creator: { type: Type.STRING },
-          mediaType: { type: Type.STRING, enum: ['movie', 'tv', 'book', 'podcast'] },
-          genres: { type: Type.ARRAY, items: { type: Type.STRING } },
-          summary: { type: Type.STRING },
-          confidence: { type: Type.INTEGER },
-        },
-        required: ['title', 'mediaType', 'confidence'],
-      },
-    },
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    contents: { parts: [{ inlineData: { mimeType: mimeType || 'image/jpeg', data: imageBase64 } }, { text: 'Identify the visible media title only if you can read it. Return JSON with title, creator, mediaType, genres, summary, confidence. Do not guess.' }] },
+    config: { responseMimeType: 'application/json' },
   });
-
   return JSON.parse(response.text || '{}');
 }

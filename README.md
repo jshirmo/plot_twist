@@ -17,8 +17,9 @@ Instead of isolating media formats, Plot Twist connects stories through mood and
    - Saves structured taste profiles directly to Cloud Firestore.
 
 3. **Gemini AI Recommendation Engine**:
-   - Server-side Gemini 3.8 Flash pipeline grounding recommendations in verified catalog candidates.
-   - Never fabricates fake titles or metadata.
+   - The browser sends only the live mood sliders and filters with a Firebase ID token. The Express server verifies the token, reads that user's saved Firestore taste profile, collects live catalog candidates, then asks Gemini to rank those candidates.
+   - TMDB supplies movie/TV IDs, runtime, and region-specific streaming metadata; Google Books supplies book volume IDs and page counts; Apple Podcasts supplies verified podcast catalog IDs.
+   - Every Gemini response is checked against the candidates returned by those catalogs. If Gemini fails or times out, a local ranker returns only those same verified candidates.
    - Returns a **Plot Twist Match Estimate (%)** and personalized, spoiler-free explanation.
 
 4. **Interactive Mood Sliders**:
@@ -96,7 +97,18 @@ Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
-Ensure `GEMINI_API_KEY` is provided for server-side recommendations.
+Set the server-only values listed in `.env.example`:
+
+- `GEMINI_API_KEY` (Google AI Studio API key)
+- one of `TMDB_API_READ_ACCESS_TOKEN` or `TMDB_API_KEY`
+- `FIREBASE_SERVICE_ACCOUNT_JSON` for local development, or an attached server service account in Cloud Run/Firebase App Hosting
+- optionally `GOOGLE_BOOKS_API_KEY` for quota control
+
+Do not use `VITE_` for any of these secrets. The public Firebase web configuration is separate from the Admin credential used by the server.
+
+### Team / multiple-computer setup
+
+Use one shared development deployment, not personal API keys on each laptop. Store Gemini, TMDB, and Firebase Admin credentials only in that deployment's secrets manager. Teammates clone the GitHub branch and set only the non-secret `VITE_API_BASE_URL` to the shared development API URL. Keep it blank when the app frontend and Express API deploy together. If they are separate, set `CORS_ALLOWED_ORIGINS` on the API to the exact frontend URLs allowed to send bearer tokens. Firebase's client configuration and the API URL are public identifiers; the Admin credential and catalog/AI keys are not.
 
 ### 3. Run Development Server
 ```bash
@@ -106,7 +118,7 @@ The application will be live at `http://localhost:3000`.
 
 ### 4. Run Unit Tests
 ```bash
-npx --yes tsx --test server/mediaCatalog.test.ts
+npm test
 ```
 
 ### 5. Production Build

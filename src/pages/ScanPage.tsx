@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { apiUrl } from '../lib/api';
 import { saveMediaItem } from '../lib/mediaService';
 import { Camera, Upload, Sparkles, Check, AlertCircle, Bookmark, RefreshCw } from 'lucide-react';
 
@@ -89,7 +90,7 @@ export const ScanPage: React.FC = () => {
 
     try {
       const base64Data = dataUrl.split(',')[1];
-      const res = await fetch('/api/scan', {
+      const res = await fetch(apiUrl('/api/scan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

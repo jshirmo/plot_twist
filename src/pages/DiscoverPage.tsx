@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { MoodSettings, MediaType, SavedMediaItem } from '../types';
 import { saveMediaItem } from '../lib/mediaService';
+import { apiUrl } from '../lib/api';
 import { Sparkles, Sliders, Film, Tv, BookOpen, Radio, Bookmark, Check, Info, Clock, AlertCircle } from 'lucide-react';
 
 interface RecommendationCardItem {
@@ -69,31 +70,41 @@ export const DiscoverPage: React.FC = () => {
   };
 
   const handleFindPlotTwist = async () => {
+    if (!user) {
+      setStatusMessage('Sign in first so Plot Twist can securely use your saved taste profile.');
+      signIn().catch(console.error);
+      return;
+    }
     setLoading(true);
     setStatusMessage(null);
 
     try {
-      const response = await fetch('/api/recommendations', {
+      const idToken = await user.getIdToken();
+      const response = await fetch(apiUrl('/api/recommendations'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
         body: JSON.stringify({
           moodSettings: mood,
-          tasteProfile: userProfile?.tasteProfile,
           formats: selectedFormats,
           maxDurationMinutes: durationLimit > 0 ? durationLimit : undefined,
           streamingServices: selectedStreamers.length > 0 ? selectedStreamers : undefined,
+          availabilityRegion: 'US',
         }),
       });
 
       if (!response.ok) {
-        throw new Error(`Server returned ${response.status}`);
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `Server returned ${response.status}`);
       }
 
       const data = await response.json();
       setRecommendations(data.results || []);
+      if (data.usedFallback) {
+        setStatusMessage('Gemini is unavailable right now, so these verified titles were ranked with your saved preferences and mood sliders.');
+      }
     } catch (err) {
       console.error('Failed to get recommendations:', err);
-      setStatusMessage('Failed to fetch recommendations. Please try again.');
+      setStatusMessage(err instanceof Error ? err.message : 'Failed to fetch recommendations. Please try again.');
     } finally {
       setLoading(false);
     }

@@ -1,33 +1,70 @@
 import { Router, Request, Response } from 'express';
 import { generateRecommendations, scanMediaPosterOrCover } from './geminiService';
 import { VERIFIED_CATALOG } from './mediaCatalog';
+import { getAuthenticatedProfile } from './authProfileService';
+import { retrieveVerifiedCandidates } from './catalogProviders';
 
 export const apiRouter = Router();
 
 // Endpoint for AI Recommendations
 apiRouter.post('/recommendations', async (req: Request, res: Response) => {
   try {
-    const { moodSettings, tasteProfile, formats, maxDurationMinutes, streamingServices, excludedMediaIds } = req.body;
+    const { moodSettings, formats, maxDurationMinutes, streamingServices, excludedMediaIds, availabilityRegion } = req.body;
 
-    if (!moodSettings) {
+    if (!isValidMood(moodSettings)) {
       return res.status(400).json({ error: 'moodSettings are required' });
     }
 
-    const results = await generateRecommendations({
-      moodSettings,
-      tasteProfile,
-      formats,
-      maxDurationMinutes,
-      streamingServices,
-      excludedMediaIds,
+    const profile = await getAuthenticatedProfile(req.header('authorization'));
+    const requestedFormats = Array.isArray(formats)
+      ? formats.filter((format): format is 'movie' | 'tv' | 'book' | 'podcast' =>
+        ['movie', 'tv', 'book', 'podcast'].includes(format)
+      )
+      : profile.tasteProfile.preferredFormats;
+    const verifiedCandidates = await retrieveVerifiedCandidates({
+      mood: moodSettings,
+      taste: profile.tasteProfile,
+      formats: requestedFormats.length ? requestedFormats : ['movie', 'tv', 'book', 'podcast'],
+      maxDurationMinutes: typeof maxDurationMinutes === 'number' && maxDurationMinutes > 0 ? maxDurationMinutes : undefined,
+      streamingServices: cleanStringArray(streamingServices),
+      availabilityRegion: typeof availabilityRegion === 'string' && /^[A-Za-z]{2}$/.test(availabilityRegion)
+        ? availabilityRegion.toUpperCase() : 'US',
+      excludedMediaIds: cleanStringArray(excludedMediaIds),
     });
 
-    return res.json({ results });
+    if (!verifiedCandidates.length) {
+      return res.status(422).json({
+        error: 'No verified titles matched those filters. Try another format, a longer runtime, or fewer streaming filters.',
+      });
+    }
+
+    const recommendation = await generateRecommendations({
+      moodSettings,
+      tasteProfile: profile.tasteProfile,
+      candidates: verifiedCandidates,
+    });
+
+    return res.json({ results: recommendation.results, usedFallback: recommendation.usedFallback });
   } catch (error) {
     console.error('API /recommendations error:', error);
-    return res.status(500).json({ error: 'Failed to generate recommendations' });
+    const message = error instanceof Error ? error.message : 'Failed to generate recommendations';
+    const status = message.includes('Authentication required') ? 401 : 500;
+    return res.status(status).json({ error: status === 401 ? message : 'Failed to generate recommendations' });
   }
 });
+
+function isValidMood(value: unknown): value is { darkness: number; romance: number; suspense: number; plotTwists: number; emotionalIntensity: number } {
+  if (!value || typeof value !== 'object') return false;
+  return ['darkness', 'romance', 'suspense', 'plotTwists', 'emotionalIntensity'].every((key) => {
+    const score = (value as Record<string, unknown>)[key];
+    return typeof score === 'number' && Number.isInteger(score) && score >= 1 && score <= 5;
+  });
+}
+
+function cleanStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === 'string').slice(0, 20);
+}
 
 // Endpoint for Movie Swipe Deck
 apiRouter.post('/swipe-deck', async (req: Request, res: Response) => {

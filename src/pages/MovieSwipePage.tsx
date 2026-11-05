@@ -3,6 +3,7 @@ import { motion, useMotionValue, useTransform, AnimatePresence } from 'motion/re
 import { useAuth } from '../context/AuthContext';
 import { MovieSwipeCard } from '../types';
 import { recordSwipeDecision, undoLastSwipeDecision } from '../lib/mediaService';
+import { apiUrl } from '../lib/api';
 import { Heart, X, RotateCcw, Sparkles, Film, Clock, Tv, CheckCircle2, ChevronRight } from 'lucide-react';
 
 export const MovieSwipePage: React.FC = () => {
@@ -25,7 +26,7 @@ export const MovieSwipePage: React.FC = () => {
     setLoading(true);
     setStatusNotice(null);
     try {
-      const res = await fetch('/api/swipe-deck', {
+      const res = await fetch(apiUrl('/api/swipe-deck'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -1,12 +1,12 @@
 {
-  "projectId": "gold-pathway-cbcxw",
-  "appId": "1:518092964457:web:669b0d1e4fae65ab5dd8f8",
-  "apiKey": "AIzaSyDPiduDMXfgpDGPFnopz4kOJjQiK9jcksM",
-  "authDomain": "gold-pathway-cbcxw.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-plottwist-4d494ee4-8f55-481a-9acc-b1ebf989ad10",
-  "storageBucket": "gold-pathway-cbcxw.firebasestorage.app",
-  "messagingSenderId": "518092964457",
+  "projectId": "gen-lang-client-0343906929",
+  "appId": "1:694517651808:web:a4d9314b043303eb586605",
+  "apiKey": "AIzaSyDWo1fYkkoB-RR2EvOmLNFWhgoazxZt8Rw",
+  "authDomain": "gen-lang-client-0343906929.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-remixplottwistka-b830bfd3-0004-4286-8cdb-57cacdde0168",
+  "storageBucket": "gen-lang-client-0343906929.firebasestorage.app",
+  "messagingSenderId": "694517651808",
   "measurementId": "",
-  "oAuthClientId": "518092964457-hstlnk3hdb82ae227sjo1jsc9dveipn3.apps.googleusercontent.com",
+  "oAuthClientId": "",
   "recaptchaSiteKey": ""
 }

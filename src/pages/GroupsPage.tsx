@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { GroupItem } from '../types';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { apiUrl } from '../lib/api';
 import { collection, doc, setDoc, getDocs, query, where, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { Users, Plus, UserPlus, Sparkles, Copy, Check, Film, ArrowRight } from 'lucide-react';
 
@@ -119,9 +120,9 @@ export const GroupsPage: React.FC = () => {
     if (!selectedGroup) return;
     setGenerating(true);
     try {
-      const res = await fetch('/api/recommendations', {
+      const res = await fetch(apiUrl('/api/recommendations'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await user!.getIdToken()}` },
         body: JSON.stringify({
           moodSettings: { darkness: 3, romance: 2, suspense: 4, plotTwists: 4, emotionalIntensity: 3 },
           formats: ['movie', 'tv'],
