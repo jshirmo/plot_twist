@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { doc, setDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { MediaType, TasteProfile } from '../types';
 import { Check, ChevronRight, ChevronLeft, Sparkles, X, Plus } from 'lucide-react';
 
@@ -42,9 +44,10 @@ const POPULAR_STORIES = [
 ];
 
 export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClose, onComplete }) => {
-  const { userProfile, saveUserProfile } = useAuth();
+  const { user, userProfile, refreshProfile } = useAuth();
   const [step, setStep] = useState(1);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Form State
   const [preferredGenres, setPreferredGenres] = useState<string[]>(
@@ -69,6 +72,22 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
   const [streamingServices, setStreamingServices] = useState<string[]>(
     userProfile?.tasteProfile?.streamingServices || ['Netflix', 'Max']
   );
+
+  // Rehydrate the questionnaire whenever it is reopened, including after a retake.
+  useEffect(() => {
+    if (!isOpen) return;
+    const saved = userProfile?.tasteProfile;
+    setPreferredGenres(saved?.preferredGenres ?? []);
+    setPreferredFormats(saved?.preferredFormats ?? []);
+    setFavoriteStories(saved?.favoriteStories ?? []);
+    setStoryElements(saved?.storyElements ?? []);
+    setDislikedGenres(saved?.dislikedGenres ?? []);
+    setTimeAvailability(saved?.timeAvailability ?? 'No preference');
+    setStreamingServices(saved?.streamingServices ?? []);
+    setCustomStoryInput('');
+    setStep(1);
+    setSaveError(null);
+  }, [isOpen, userProfile?.tasteProfile]);
 
   if (!isOpen) return null;
 
@@ -103,17 +122,20 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
         updatedAt: new Date().toISOString(),
       };
 
-      if (userProfile) {
-        await saveUserProfile({
-          onboardingCompleted: true,
-          tasteProfile: taste,
-        });
-      }
-
+      if (!user) throw new Error('Please sign in to save your preferences.');
+      // Write directly because the shared saveUserProfile helper currently catches
+      // Firestore failures instead of propagating them to the caller.
+      await setDoc(doc(db, 'users', user.uid), {
+        userId: user.uid,
+        onboardingCompleted: true,
+        tasteProfile: taste,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+      await refreshProfile();
       onComplete();
     } catch (err) {
       console.error('Error saving onboarding questionnaire:', err);
-      onComplete();
+      setSaveError('Could not save your answers. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -146,6 +168,10 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {saveError && (
+          <p role="alert" className="px-6 pt-3 text-sm text-rose-400">{saveError}</p>
+        )}
 
         {/* Step indicator bar */}
         <div className="w-full bg-[#10283F] h-1.5">
