@@ -2,6 +2,8 @@ import {
   collection,
   doc,
   setDoc,
+  getDoc,
+  updateDoc,
   deleteDoc,
   getDocs,
   query,
@@ -10,7 +12,28 @@ import {
   limit,
 } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from './firebase';
-import { SavedMediaItem, SwipeDecisionRecord } from '../types';
+import { MediaType, SavedMediaItem, SwipeDecisionRecord } from '../types';
+
+// New saves include the format so a TMDB movie and TV show with the same ID
+// cannot overwrite one another. Existing untyped records remain accessible.
+function mediaDocumentId(userId: string, mediaId: string, mediaType?: MediaType): string {
+  return [userId, mediaType, mediaId].filter(Boolean).join('_').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+async function findSavedDocument(userId: string, mediaId: string, mediaType?: MediaType) {
+  const types: MediaType[] = mediaType ? [mediaType] : ['movie'];
+  for (const type of types) {
+    const typedRef = doc(db, 'savedMedia', mediaDocumentId(userId, mediaId, type));
+    if ((await getDoc(typedRef)).exists()) return typedRef;
+  }
+
+  const legacyRef = doc(db, 'savedMedia', mediaDocumentId(userId, mediaId));
+  const legacy = await getDoc(legacyRef);
+  if (legacy.exists() && (!mediaType || legacy.data().mediaType === mediaType)) {
+    return legacyRef;
+  }
+  return null;
+}
 
 export async function saveMediaItem(
   item: Omit<SavedMediaItem, 'userId' | 'createdAt' | 'updatedAt' | 'id'>
@@ -18,20 +41,26 @@ export async function saveMediaItem(
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Authentication required to save media');
 
-  const docId = `${currentUser.uid}_${item.mediaId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const path = `savedMedia/${docId}`;
-
-  const now = new Date().toISOString();
-  const fullItem: SavedMediaItem = {
-    ...item,
-    id: docId,
-    userId: currentUser.uid,
-    createdAt: now,
-    updatedAt: now,
-  };
-
+  const path = 'savedMedia';
   try {
-    await setDoc(doc(db, 'savedMedia', docId), fullItem, { merge: true });
+    const existingRef = await findSavedDocument(currentUser.uid, item.mediaId, item.mediaType);
+    const itemRef = existingRef ?? doc(db, path, mediaDocumentId(currentUser.uid, item.mediaId, item.mediaType));
+    const existingSnapshot = existingRef ? await getDoc(existingRef) : null;
+    const existing = existingSnapshot?.exists() ? existingSnapshot.data() as SavedMediaItem : null;
+    const now = new Date().toISOString();
+
+    const fullItem: SavedMediaItem = {
+      ...item,
+      id: itemRef.id,
+      userId: currentUser.uid,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      // Saving the same title again must not erase a completed review.
+      ...(existing?.status === 'completed' ? { status: 'completed' as const } : {}),
+      ...(existing?.rating ? { rating: existing.rating } : {}),
+    };
+
+    await setDoc(itemRef, fullItem, { merge: true });
     return fullItem;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -42,15 +71,17 @@ export async function updateMediaStatus(
   mediaId: string,
   status: SavedMediaItem['status'],
   rating?: SavedMediaItem['rating'],
-  userNotes?: string
+  userNotes?: string,
+  mediaType?: MediaType
 ): Promise<void> {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Authentication required');
 
-  const docId = `${currentUser.uid}_${mediaId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const path = `savedMedia/${docId}`;
-
+  const path = 'savedMedia';
   try {
+    const itemRef = await findSavedDocument(currentUser.uid, mediaId, mediaType);
+    if (!itemRef) throw new Error('Saved title not found in your library.');
+
     const payload: Partial<SavedMediaItem> = {
       status,
       updatedAt: new Date().toISOString(),
@@ -58,21 +89,21 @@ export async function updateMediaStatus(
     if (rating !== undefined) payload.rating = rating;
     if (userNotes !== undefined) payload.userNotes = userNotes;
 
-    await setDoc(doc(db, 'savedMedia', docId), payload, { merge: true });
+    // updateDoc rejects missing documents rather than creating incomplete records.
+    await updateDoc(itemRef, payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 
-export async function removeSavedMedia(mediaId: string): Promise<void> {
+export async function removeSavedMedia(mediaId: string, mediaType?: MediaType): Promise<void> {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Authentication required');
 
-  const docId = `${currentUser.uid}_${mediaId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const path = `savedMedia/${docId}`;
-
+  const path = 'savedMedia';
   try {
-    await deleteDoc(doc(db, 'savedMedia', docId));
+    const itemRef = await findSavedDocument(currentUser.uid, mediaId, mediaType);
+    if (itemRef) await deleteDoc(itemRef);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -87,12 +118,8 @@ export async function getUserSavedMedia(userId: string): Promise<SavedMediaItem[
   const path = 'savedMedia';
   try {
     const q = query(collection(db, path), where('userId', '==', userId));
-    const querySnapshot = await getDocs(q);
-    const results: SavedMediaItem[] = [];
-    querySnapshot.forEach((d) => {
-      results.push(d.data() as SavedMediaItem);
-    });
-    return results;
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ ...d.data() as SavedMediaItem, id: d.id }));
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }
