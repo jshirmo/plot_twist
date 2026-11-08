@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { GroupItem } from '../types';
-import { getUserSavedMedia } from '../lib/mediaService';
+import { getUserRatingFeedback } from '../lib/mediaService';
 import { db } from '../lib/firebase';
 import { collection, doc, setDoc, getDoc, getDocs, query, where, updateDoc, deleteDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { Users, Plus, UserPlus, Sparkles, Copy, Check, ArrowRight } from 'lucide-react';
@@ -163,11 +163,7 @@ export const GroupsPage: React.FC = () => {
     setNotice(null);
     setGroupRecommendations([]);
     try {
-      const saved = await getUserSavedMedia(user.uid);
-      const rated = saved.filter((item) => item.status === 'completed' && (item.rating === 'liked' || item.rating === 'disliked'));
-      const feedback = (rating: 'liked' | 'disliked') =>
-        rated.filter((item) => item.rating === rating)
-          .map(({ title, mediaType, genres }) => ({ title, mediaType, genres }));
+      const ratingFeedback = await getUserRatingFeedback(user.uid);
 
       const res = await fetch('/api/recommendations', {
         method: 'POST',
@@ -176,7 +172,7 @@ export const GroupsPage: React.FC = () => {
           moodSettings: { darkness: 3, romance: 2, suspense: 4, plotTwists: 4, emotionalIntensity: 3 },
           tasteProfile: userProfile?.tasteProfile,
           formats: ['movie', 'tv', 'book', 'podcast'],
-          ratingFeedback: { liked: feedback('liked'), disliked: feedback('disliked') },
+          ratingFeedback,
           groupId: selectedGroup.id,
         }),
       });
