@@ -125,6 +125,34 @@ export async function getUserSavedMedia(userId: string): Promise<SavedMediaItem[
   }
 }
 
+// Request contract proposed to Ben: only completed Liked/Disliked titles count.
+// Keep user data in this existing savedMedia collection; no new Firestore fields.
+export interface RatedTitleFeedback {
+  title: string;
+  mediaType: MediaType;
+  genres: string[];
+}
+
+export interface RecommendationRatingFeedback {
+  liked: RatedTitleFeedback[];
+  disliked: RatedTitleFeedback[];
+}
+
+export async function getUserRatingFeedback(userId: string): Promise<RecommendationRatingFeedback> {
+  const saved = await getUserSavedMedia(userId);
+  const feedback: RecommendationRatingFeedback = { liked: [], disliked: [] };
+  for (const item of saved) {
+    if (item.status !== 'completed') continue;
+    if (item.rating !== 'liked' && item.rating !== 'disliked') continue;
+    feedback[item.rating].push({
+      title: item.title,
+      mediaType: item.mediaType,
+      genres: item.genres ?? [],
+    });
+  }
+  return feedback;
+}
+
 export async function recordSwipeDecision(
   swipe: Omit<SwipeDecisionRecord, 'userId' | 'createdAt' | 'id'>
 ): Promise<SwipeDecisionRecord> {
