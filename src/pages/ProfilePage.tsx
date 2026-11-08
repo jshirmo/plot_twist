@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { User, Sparkles, Sliders, LogOut, CheckCircle2, RefreshCw } from 'lucide-react';
+import { SavedMediaItem } from '../types';
+import { getUserSavedMedia } from '../lib/mediaService';
+import { User, LogOut, CheckCircle2, RefreshCw, ThumbsUp, ThumbsDown } from 'lucide-react';
 
 interface ProfilePageProps {
   onOpenOnboarding: () => void;
@@ -8,6 +10,43 @@ interface ProfilePageProps {
 
 export const ProfilePage: React.FC<ProfilePageProps> = ({ onOpenOnboarding }) => {
   const { user, userProfile, signOut, signIn } = useAuth();
+  const [ratedTitles, setRatedTitles] = useState<SavedMediaItem[]>([]);
+  const [ratingsError, setRatingsError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setRatedTitles([]);
+    setRatingsError(false);
+    if (user) {
+      getUserSavedMedia(user.uid)
+        .then((items) => {
+          if (active) {
+            setRatedTitles(items.filter((item) =>
+              item.status === 'completed' && (item.rating === 'liked' || item.rating === 'disliked')
+            ));
+          }
+        })
+        .catch((error) => {
+          console.error('Failed to load rated titles:', error);
+          if (active) setRatingsError(true);
+        });
+    }
+    return () => { active = false; };
+  }, [user?.uid]);
+
+  const likedTitles = ratedTitles.filter((item) => item.rating === 'liked');
+  const dislikedCount = ratedTitles.length - likedTitles.length;
+  const topValues = (values: string[]) => {
+    const counts = new Map<string, number>();
+    values.forEach((value) => counts.set(value, (counts.get(value) ?? 0) + 1));
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 3)
+      .map(([value]) => value);
+  };
+  const topGenres = topValues(likedTitles.flatMap((item) => item.genres ?? []));
+  const favoriteFormats = topValues(likedTitles.map((item) => item.mediaType));
+
 
   if (!user) {
     return (
@@ -74,6 +113,39 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onOpenOnboarding }) =>
           </button>
         </div>
       </div>
+
+      {/* Ratings-derived preferences; never confuse questionnaire choices with actual ratings. */}
+      <section className="bg-[#10283F]/30 border border-[#10283F] rounded-2xl p-6 sm:p-8 space-y-4">
+        <div>
+          <span className="text-xs font-semibold uppercase tracking-wider text-[#D9B66F]">Based on your ratings</span>
+          <h2 className="text-xl font-serif font-bold text-[#F7F2E9]">Your Taste So Far</h2>
+        </div>
+        {ratingsError ? (
+          <p role="alert" className="text-sm text-rose-300">Could not load your ratings. Try reopening your profile.</p>
+        ) : ratedTitles.length === 0 ? (
+          <p className="text-sm text-[#F7F2E9]/70">
+            Rate finished books, movies, TV shows, and podcasts to build your taste summary.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-4 text-sm text-[#F7F2E9]">
+              <span><strong>{ratedTitles.length}</strong> rated</span>
+              <span className="flex items-center gap-1"><ThumbsUp className="w-4 h-4 text-emerald-400" />{likedTitles.length} liked</span>
+              <span className="flex items-center gap-1"><ThumbsDown className="w-4 h-4 text-rose-400" />{dislikedCount} disliked</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <h3 className="text-xs uppercase tracking-wider text-[#F7F2E9]/60 mb-2">Top liked genres</h3>
+                <p className="text-sm text-[#F7F2E9]">{topGenres.join(' · ') || 'No genres rated yet'}</p>
+              </div>
+              <div>
+                <h3 className="text-xs uppercase tracking-wider text-[#F7F2E9]/60 mb-2">Favorite formats</h3>
+                <p className="text-sm text-[#F7F2E9] capitalize">{favoriteFormats.join(' · ') || 'No favorite format yet'}</p>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
 
       {/* Taste Profile Breakdown */}
       <div className="bg-[#10283F]/30 border border-[#10283F] rounded-2xl p-6 sm:p-8 space-y-6">
