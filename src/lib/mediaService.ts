@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   setDoc,
+  updateDoc,
   deleteDoc,
   getDocs,
   query,
@@ -10,7 +11,28 @@ import {
   limit,
 } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from './firebase';
-import { SavedMediaItem, SwipeDecisionRecord } from '../types';
+import { MediaType, SavedMediaItem, SwipeDecisionRecord } from '../types';
+
+// New saves include the format so a TMDB movie and TV show with the same ID
+// cannot overwrite one another. Existing untyped records remain accessible.
+function mediaDocumentId(userId: string, mediaId: string, mediaType?: MediaType): string {
+  return [userId, mediaType, mediaId].filter(Boolean).join('_').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+async function findSavedDocument(userId: string, mediaId: string, mediaType?: MediaType) {
+  // Owner-filtered queries are permitted even when no saved document exists.
+  // A direct get of a missing document is denied by the owner-based rules.
+  const snap = await getDocs(query(collection(db, 'savedMedia'), where('userId', '==', userId)));
+  const typedId = mediaDocumentId(userId, mediaId, mediaType ?? 'movie');
+  const legacyId = mediaDocumentId(userId, mediaId);
+  const matches = snap.docs.filter((saved) => {
+    const item = saved.data() as SavedMediaItem;
+    return item.mediaId === mediaId && (!mediaType || item.mediaType === mediaType);
+  });
+  return matches.find((saved) => saved.id === typedId)
+    ?? matches.find((saved) => saved.id === legacyId)
+    ?? null;
+}
 
 export async function saveMediaItem(
   item: Omit<SavedMediaItem, 'userId' | 'createdAt' | 'updatedAt' | 'id'>
@@ -18,20 +40,28 @@ export async function saveMediaItem(
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Authentication required to save media');
 
-  const docId = `${currentUser.uid}_${item.mediaId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const path = `savedMedia/${docId}`;
-
-  const now = new Date().toISOString();
-  const fullItem: SavedMediaItem = {
-    ...item,
-    id: docId,
-    userId: currentUser.uid,
-    createdAt: now,
-    updatedAt: now,
-  };
-
+  const path = 'savedMedia';
   try {
-    await setDoc(doc(db, 'savedMedia', docId), fullItem, { merge: true });
+    const existingSnapshot = await findSavedDocument(currentUser.uid, item.mediaId, item.mediaType);
+    const itemRef = existingSnapshot?.ref ?? doc(db, path, mediaDocumentId(currentUser.uid, item.mediaId, item.mediaType));
+    const existing = existingSnapshot ? existingSnapshot.data() as SavedMediaItem : null;
+    const now = new Date().toISOString();
+    const cleanItem = Object.fromEntries(
+      Object.entries(item).filter(([, value]) => value !== undefined)
+    ) as typeof item;
+
+    const fullItem: SavedMediaItem = {
+      ...cleanItem,
+      id: itemRef.id,
+      userId: currentUser.uid,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      // Saving again must not reset progress or erase a completed review.
+      status: existing && existing.status !== 'passed' ? existing.status : item.status,
+      ...(existing?.rating ? { rating: existing.rating } : {}),
+    };
+
+    await setDoc(itemRef, fullItem, { merge: true });
     return fullItem;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -42,15 +72,17 @@ export async function updateMediaStatus(
   mediaId: string,
   status: SavedMediaItem['status'],
   rating?: SavedMediaItem['rating'],
-  userNotes?: string
+  userNotes?: string,
+  mediaType?: MediaType
 ): Promise<void> {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Authentication required');
 
-  const docId = `${currentUser.uid}_${mediaId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const path = `savedMedia/${docId}`;
-
+  const path = 'savedMedia';
   try {
+    const saved = await findSavedDocument(currentUser.uid, mediaId, mediaType);
+    if (!saved) throw new Error('Saved title not found in your library.');
+
     const payload: Partial<SavedMediaItem> = {
       status,
       updatedAt: new Date().toISOString(),
@@ -58,21 +90,21 @@ export async function updateMediaStatus(
     if (rating !== undefined) payload.rating = rating;
     if (userNotes !== undefined) payload.userNotes = userNotes;
 
-    await setDoc(doc(db, 'savedMedia', docId), payload, { merge: true });
+    // updateDoc rejects missing documents rather than creating incomplete records.
+    await updateDoc(saved.ref, payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 
-export async function removeSavedMedia(mediaId: string): Promise<void> {
+export async function removeSavedMedia(mediaId: string, mediaType?: MediaType): Promise<void> {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Authentication required');
 
-  const docId = `${currentUser.uid}_${mediaId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const path = `savedMedia/${docId}`;
-
+  const path = 'savedMedia';
   try {
-    await deleteDoc(doc(db, 'savedMedia', docId));
+    const saved = await findSavedDocument(currentUser.uid, mediaId, mediaType);
+    if (saved) await deleteDoc(saved.ref);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -87,15 +119,39 @@ export async function getUserSavedMedia(userId: string): Promise<SavedMediaItem[
   const path = 'savedMedia';
   try {
     const q = query(collection(db, path), where('userId', '==', userId));
-    const querySnapshot = await getDocs(q);
-    const results: SavedMediaItem[] = [];
-    querySnapshot.forEach((d) => {
-      results.push(d.data() as SavedMediaItem);
-    });
-    return results;
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ ...d.data() as SavedMediaItem, id: d.id }));
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }
+}
+
+// Request contract proposed to Ben: only completed Liked/Disliked titles count.
+// Keep user data in this existing savedMedia collection; no new Firestore fields.
+export interface RatedTitleFeedback {
+  title: string;
+  mediaType: MediaType;
+  genres: string[];
+}
+
+export interface RecommendationRatingFeedback {
+  liked: RatedTitleFeedback[];
+  disliked: RatedTitleFeedback[];
+}
+
+export async function getUserRatingFeedback(userId: string): Promise<RecommendationRatingFeedback> {
+  const saved = await getUserSavedMedia(userId);
+  const feedback: RecommendationRatingFeedback = { liked: [], disliked: [] };
+  for (const item of saved) {
+    if (item.status !== 'completed') continue;
+    if (item.rating !== 'liked' && item.rating !== 'disliked') continue;
+    feedback[item.rating].push({
+      title: item.title,
+      mediaType: item.mediaType,
+      genres: item.genres ?? [],
+    });
+  }
+  return feedback;
 }
 
 export async function recordSwipeDecision(
@@ -189,3 +245,4 @@ export async function getUserSwipeHistory(userId: string): Promise<SwipeDecision
     handleFirestoreError(error, OperationType.LIST, path);
   }
 }
+

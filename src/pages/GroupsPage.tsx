@@ -1,12 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { GroupItem } from '../types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, doc, setDoc, getDocs, query, where, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
-import { Users, Plus, UserPlus, Sparkles, Copy, Check, Film, ArrowRight } from 'lucide-react';
+import { getUserRatingFeedback } from '../lib/mediaService';
+import { db } from '../lib/firebase';
+import { collection, doc, setDoc, getDoc, getDocs, query, where, updateDoc, deleteDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { Users, Plus, UserPlus, Sparkles, Copy, Check, ArrowRight } from 'lucide-react';
 
 export const GroupsPage: React.FC = () => {
-  const { user, signIn } = useAuth();
+  const { user, userProfile, signIn } = useAuth();
   const [groups, setGroups] = useState<GroupItem[]>([]);
   const [newGroupName, setNewGroupName] = useState('');
   const [inviteCodeInput, setInviteCodeInput] = useState('');
@@ -16,41 +17,61 @@ export const GroupsPage: React.FC = () => {
   const [generating, setGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const recommendationRequest = useRef(0);
 
-  const loadGroups = async () => {
-    if (!user) return;
-    setLoading(true);
-    const path = 'groups';
-    try {
-      const q = query(collection(db, path), where('memberIds', 'array-contains', user.uid));
-      const snap = await getDocs(q);
-      const items: GroupItem[] = [];
-      snap.forEach((d) => items.push(d.data() as GroupItem));
-      setGroups(items);
-      if (items.length > 0 && !selectedGroup) {
-        setSelectedGroup(items[0]);
-      }
-    } catch (err) {
-      console.error('Error fetching groups:', err);
-    } finally {
-      setLoading(false);
-    }
+  const selectGroup = (group: GroupItem | null) => {
+    recommendationRequest.current += 1;
+    setSelectedGroup(group);
+    setGroupRecommendations([]);
+    setGenerating(false);
+    setCopiedCode(false);
+    setNotice(null);
   };
 
   useEffect(() => {
-    if (user) {
-      loadGroups();
-    } else {
-      setLoading(false);
-    }
-  }, [user]);
+    let active = true;
+    setGroups([]);
+    selectGroup(null);
+    setLoading(Boolean(user));
+    if (!user) return () => { active = false; };
+
+    const load = async () => {
+      try {
+        // Firestore security rules only allow members to list their own groups.
+        const q = query(collection(db, 'groups'), where('memberIds', 'array-contains', user.uid));
+        const snap = await getDocs(q);
+        if (!active) return;
+        const items = snap.docs.map((d) => d.data() as GroupItem);
+        setGroups(items);
+        selectGroup(items[0] ?? null);
+      } catch (err) {
+        console.error('Error fetching groups:', err);
+        if (active) setNotice('Could not load your groups. Please try again.');
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+      recommendationRequest.current += 1;
+    };
+  }, [user?.uid]);
 
   const handleCreateGroup = async () => {
-    if (!user || !newGroupName.trim()) return;
-    const groupId = `grp_${Date.now()}`;
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const path = `groups/${groupId}`;
+    if (!user || !newGroupName.trim() || busy) return;
+    setBusy(true);
+    setNotice(null);
 
+    // Use cryptographic randomness for the invite code. For newly created groups,
+    // the group document ID is derivable from the code so a joiner can update
+    // membership without first reading a member-only Firestore document.
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const randomBytes = new Uint32Array(6);
+    crypto.getRandomValues(randomBytes);
+    const code = Array.from(randomBytes, (value) => alphabet[value % alphabet.length]).join('');
+    const groupId = `grp_${code}`;
     const newGroup: GroupItem = {
       id: groupId,
       name: newGroupName.trim(),
@@ -63,76 +84,120 @@ export const GroupsPage: React.FC = () => {
 
     try {
       await setDoc(doc(db, 'groups', groupId), newGroup);
-      setGroups([...groups, newGroup]);
-      setSelectedGroup(newGroup);
+      setGroups((prev) => [...prev, newGroup]);
+      selectGroup(newGroup);
       setNewGroupName('');
-      setNotice(`Group "${newGroup.name}" created! Invite code: ${code}`);
+      setNotice(`Created "${newGroup.name}". Share your six-character invite code.`);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, path);
+      console.error('Error creating group:', err);
+      setNotice('Could not create this group. Please try again.');
+    } finally {
+      setBusy(false);
     }
   };
 
   const handleJoinGroupByCode = async () => {
-    if (!user || !inviteCodeInput.trim()) return;
+    if (!user || busy) return;
     const cleanCode = inviteCodeInput.trim().toUpperCase();
-    const path = 'groups';
-
+    if (!/^[A-Z2-9]{6}$/.test(cleanCode)) {
+      setNotice('Enter a valid six-character invite code.');
+      return;
+    }
+    setBusy(true);
+    setNotice(null);
     try {
-      const q = query(collection(db, path), where('inviteCode', '==', cleanCode));
-      const snap = await getDocs(q);
-      if (snap.empty) {
-        setNotice('No group found with that invite code.');
-        return;
-      }
-
-      const targetDoc = snap.docs[0];
-      const targetGroup = targetDoc.data() as GroupItem;
-
-      if (targetGroup.memberIds.includes(user.uid)) {
-        setNotice('You are already a member of this group!');
-        setSelectedGroup(targetGroup);
-        return;
-      }
-
-      await updateDoc(doc(db, 'groups', targetDoc.id), {
+      const groupRef = doc(db, 'groups', `grp_${cleanCode}`);
+      // Do not query or read a group before membership: security rules disallow it.
+      await updateDoc(groupRef, {
         memberIds: arrayUnion(user.uid),
         updatedAt: new Date().toISOString(),
       });
-
-      const updated = { ...targetGroup, memberIds: [...targetGroup.memberIds, user.uid] };
-      setGroups([...groups, updated]);
-      setSelectedGroup(updated);
+      const snap = await getDoc(groupRef);
+      if (!snap.exists()) throw new Error('Group missing after join');
+      const joined = snap.data() as GroupItem;
+      setGroups((prev) => prev.some((group) => group.id === joined.id) ? prev : [...prev, joined]);
+      selectGroup(joined);
       setInviteCodeInput('');
-      setNotice(`Successfully joined "${updated.name}"!`);
+      setNotice(`Joined "${joined.name}".`);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, path);
+      console.error('Error joining group:', err);
+      setNotice('Could not join. Check the code, or ask the owner to recreate an older group.');
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleCopyCode = (code: string) => {
-    navigator.clipboard.writeText(code);
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2500);
+  const handleLeaveGroup = async (group: GroupItem) => {
+    if (!user || busy || !group.memberIds.includes(user.uid)) return;
+    const isOwner = group.ownerId === user.uid;
+    if (isOwner && !window.confirm('You own this group. Delete it for every member?')) return;
+
+    setBusy(true);
+    setNotice(null);
+    try {
+      const groupRef = doc(db, 'groups', group.id);
+      if (isOwner) {
+        await deleteDoc(groupRef);
+      } else {
+        await updateDoc(groupRef, {
+          memberIds: arrayRemove(user.uid),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      const remaining = groups.filter((item) => item.id !== group.id);
+      setGroups(remaining);
+      selectGroup(remaining[0] ?? null);
+      setNotice(isOwner ? 'Group deleted.' : 'You left the group.');
+    } catch (err) {
+      console.error('Error leaving group:', err);
+      setNotice('Could not leave this group. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCopyCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2500);
+    } catch {
+      setNotice('Could not copy the code. Please copy it manually.');
+    }
   };
 
   const handleGenerateGroupRecommendations = async () => {
-    if (!selectedGroup) return;
+    if (!selectedGroup || !user || generating) return;
+    const request = ++recommendationRequest.current;
     setGenerating(true);
+    setNotice(null);
+    setGroupRecommendations([]);
     try {
+      const ratingFeedback = await getUserRatingFeedback(user.uid);
+      if (request !== recommendationRequest.current) return;
+
       const res = await fetch('/api/recommendations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           moodSettings: { darkness: 3, romance: 2, suspense: 4, plotTwists: 4, emotionalIntensity: 3 },
-          formats: ['movie', 'tv'],
+          tasteProfile: userProfile?.tasteProfile,
+          formats: ['movie', 'tv', 'book', 'podcast'],
+          ratingFeedback,
+          groupId: selectedGroup.id,
         }),
       });
+      if (!res.ok) throw new Error(`Recommendations returned ${res.status}`);
       const data = await res.json();
-      setGroupRecommendations(data.results || []);
+      if (request !== recommendationRequest.current) return;
+      setGroupRecommendations(Array.isArray(data.results) ? data.results : []);
     } catch (err) {
       console.error('Error generating group recommendations:', err);
+      if (request === recommendationRequest.current) {
+        setNotice('Could not generate picks. Please try again.');
+      }
     } finally {
-      setGenerating(false);
+      if (request === recommendationRequest.current) setGenerating(false);
     }
   };
 
@@ -144,7 +209,7 @@ export const GroupsPage: React.FC = () => {
           Sign In to Access Groups
         </h2>
         <p className="text-sm text-[#F7F2E9]/70">
-          Create shared watchlists and collective recommendations with friends and family.
+          Create groups with friends and discover stories to enjoy together.
         </p>
         <button
           onClick={() => signIn()}
@@ -162,7 +227,7 @@ export const GroupsPage: React.FC = () => {
       <div className="border-b border-[#10283F] pb-6 space-y-2">
         <h1 className="text-3xl font-serif font-bold text-[#F7F2E9]">Group Recommendations</h1>
         <p className="text-xs text-[#F7F2E9]/70">
-          Collaborate with friends to discover movies and shows that satisfy everyone's taste
+          Organize groups and explore books, movies, shows, and podcasts together
         </p>
       </div>
 
@@ -192,6 +257,7 @@ export const GroupsPage: React.FC = () => {
               />
               <button
                 onClick={handleCreateGroup}
+                disabled={busy}
                 className="px-3.5 py-2 bg-[#D9B66F] text-[#091A2B] font-bold text-xs rounded-lg hover:bg-[#D9B66F]/90 cursor-pointer"
               >
                 Create
@@ -215,6 +281,7 @@ export const GroupsPage: React.FC = () => {
               />
               <button
                 onClick={handleJoinGroupByCode}
+                disabled={busy}
                 className="px-3.5 py-2 bg-[#2C7A7B] text-white font-bold text-xs rounded-lg hover:bg-[#2C7A7B]/90 cursor-pointer"
               >
                 Join
@@ -227,13 +294,15 @@ export const GroupsPage: React.FC = () => {
             <span className="text-xs font-semibold uppercase tracking-wider text-[#D9B66F] block">
               Your Groups ({groups.length})
             </span>
-            {groups.length === 0 ? (
+            {loading ? (
+              <p className="text-xs text-[#F7F2E9]/60">Loading your groups...</p>
+            ) : groups.length === 0 ? (
               <p className="text-xs text-[#F7F2E9]/50">You aren't in any groups yet.</p>
             ) : (
               groups.map((grp) => (
                 <button
                   key={grp.id}
-                  onClick={() => setSelectedGroup(grp)}
+                  onClick={() => selectGroup(grp)}
                   className={`w-full p-4 rounded-xl border text-left transition-colors flex items-center justify-between cursor-pointer ${
                     selectedGroup?.id === grp.id
                       ? 'bg-[#10283F] border-[#D9B66F] text-[#F7F2E9]'
@@ -253,13 +322,14 @@ export const GroupsPage: React.FC = () => {
 
         {/* Right Column: Selected Group Details & AI Recommendations */}
         <div className="lg:col-span-2 space-y-6">
-          {selectedGroup ? (
+          {selectedGroup && selectedGroup.memberIds.includes(user.uid) ? (
             <div className="bg-[#10283F]/30 border border-[#10283F] rounded-2xl p-6 space-y-6">
               {/* Group Header & Invite Code */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#10283F] pb-4">
                 <div>
                   <span className="text-xs text-[#D9B66F] font-semibold uppercase">Active Group</span>
                   <h2 className="text-2xl font-serif font-bold text-[#F7F2E9]">{selectedGroup.name}</h2>
+                  <button onClick={() => handleLeaveGroup(selectedGroup)} disabled={busy} className="mt-2 text-xs text-rose-300 disabled:opacity-50 cursor-pointer">{selectedGroup.ownerId === user.uid ? "Delete Group" : "Leave Group"}</button>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -284,7 +354,7 @@ export const GroupsPage: React.FC = () => {
                     Find Group Compromise Pick
                   </h4>
                   <p className="text-xs text-[#F7F2E9]/70">
-                    Gemini AI balances all members' preferences to recommend titles everyone will enjoy.
+                    Preview picks based on your own preferences. Group-wide matching requires Ben's backend integration.
                   </p>
                 </div>
                 <button
@@ -293,7 +363,7 @@ export const GroupsPage: React.FC = () => {
                   className="px-5 py-2.5 bg-[#D9B66F] text-[#091A2B] font-bold text-xs uppercase tracking-wider rounded-lg transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
                   <Sparkles className="w-4 h-4" />
-                  <span>{generating ? 'Analyzing Group...' : 'Generate Shared Picks'}</span>
+                  <span>{generating ? 'Finding Picks...' : 'Preview Picks'}</span>
                 </button>
               </div>
 
@@ -301,7 +371,7 @@ export const GroupsPage: React.FC = () => {
               {groupRecommendations.length > 0 && (
                 <div className="space-y-4 pt-2">
                   <h3 className="font-serif font-bold text-base text-[#F7F2E9]">
-                    Balanced Group Recommendations
+                    Recommendation Preview
                   </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {groupRecommendations.slice(0, 4).map((item) => (
@@ -338,3 +408,4 @@ export const GroupsPage: React.FC = () => {
     </div>
   );
 };
+
