@@ -33,6 +33,12 @@
   - Collaborative Groups with unique 6-character invite codes, member management, and shared Gemini compromise picks.
   - Camera & File upload visual scanner with Gemini vision identifying title, author, and calculating personal compatibility score.
 
+- **Near You navigation (Integrated; external data pending configuration)**
+  - Chloe's `NearYouPage` is mounted in `src/App.tsx` and linked from desktop/mobile navigation.
+  - Direct page selection uses `?tab=near-you`.
+  - The server has `/api/local/events`, `/api/local/bookstores`, and `/api/local/status`; live results require `TICKETMASTER_API_KEY` and `GOOGLE_PLACES_API_KEY` configured on the deployment (not committed to Git).
+  - No live external-event or bookstore data validation has been completed yet.
+
 ## Unit & Integration Tests Passing
 - `server/mediaCatalog.test.ts` (4/4 tests passed):
   - Catalog verification across all 4 media formats
