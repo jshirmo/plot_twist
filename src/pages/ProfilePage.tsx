@@ -224,6 +224,19 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onOpenOnboarding }) =>
 
             <div className="space-y-2">
               <span className="text-xs font-semibold uppercase tracking-wider text-[#F7F2E9]/50 block">
+                Genres to Avoid
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {(taste.dislikedGenres ?? []).length > 0 ? taste.dislikedGenres.map((genre) => (
+                  <span key={genre} className="px-2.5 py-1 bg-[#10283F] border border-[#10283F] rounded-md text-xs text-[#F7F2E9]">
+                    {genre}
+                  </span>
+                )) : <span className="text-xs text-[#F7F2E9]/60">No genres to avoid</span>}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-[#F7F2E9]/50 block">
                 Typical Available Time
               </span>
               <span className="text-xs text-[#F7F2E9] font-medium">{taste.timeAvailability}</span>
@@ -260,3 +273,4 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ onOpenOnboarding }) =>
     </div>
   );
 };
+

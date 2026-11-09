@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { GroupItem } from '../types';
 import { getUserRatingFeedback } from '../lib/mediaService';
@@ -18,12 +18,21 @@ export const GroupsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const recommendationRequest = useRef(0);
+
+  const selectGroup = (group: GroupItem | null) => {
+    recommendationRequest.current += 1;
+    setSelectedGroup(group);
+    setGroupRecommendations([]);
+    setGenerating(false);
+    setCopiedCode(false);
+    setNotice(null);
+  };
 
   useEffect(() => {
     let active = true;
     setGroups([]);
-    setSelectedGroup(null);
-    setGroupRecommendations([]);
+    selectGroup(null);
     setLoading(Boolean(user));
     if (!user) return () => { active = false; };
 
@@ -35,7 +44,7 @@ export const GroupsPage: React.FC = () => {
         if (!active) return;
         const items = snap.docs.map((d) => d.data() as GroupItem);
         setGroups(items);
-        setSelectedGroup(items[0] ?? null);
+        selectGroup(items[0] ?? null);
       } catch (err) {
         console.error('Error fetching groups:', err);
         if (active) setNotice('Could not load your groups. Please try again.');
@@ -44,7 +53,10 @@ export const GroupsPage: React.FC = () => {
       }
     };
     void load();
-    return () => { active = false; };
+    return () => {
+      active = false;
+      recommendationRequest.current += 1;
+    };
   }, [user?.uid]);
 
   const handleCreateGroup = async () => {
@@ -73,8 +85,7 @@ export const GroupsPage: React.FC = () => {
     try {
       await setDoc(doc(db, 'groups', groupId), newGroup);
       setGroups((prev) => [...prev, newGroup]);
-      setSelectedGroup(newGroup);
-      setGroupRecommendations([]);
+      selectGroup(newGroup);
       setNewGroupName('');
       setNotice(`Created "${newGroup.name}". Share your six-character invite code.`);
     } catch (err) {
@@ -105,8 +116,7 @@ export const GroupsPage: React.FC = () => {
       if (!snap.exists()) throw new Error('Group missing after join');
       const joined = snap.data() as GroupItem;
       setGroups((prev) => prev.some((group) => group.id === joined.id) ? prev : [...prev, joined]);
-      setSelectedGroup(joined);
-      setGroupRecommendations([]);
+      selectGroup(joined);
       setInviteCodeInput('');
       setNotice(`Joined "${joined.name}".`);
     } catch (err) {
@@ -136,8 +146,7 @@ export const GroupsPage: React.FC = () => {
       }
       const remaining = groups.filter((item) => item.id !== group.id);
       setGroups(remaining);
-      setSelectedGroup(remaining[0] ?? null);
-      setGroupRecommendations([]);
+      selectGroup(remaining[0] ?? null);
       setNotice(isOwner ? 'Group deleted.' : 'You left the group.');
     } catch (err) {
       console.error('Error leaving group:', err);
@@ -159,11 +168,13 @@ export const GroupsPage: React.FC = () => {
 
   const handleGenerateGroupRecommendations = async () => {
     if (!selectedGroup || !user || generating) return;
+    const request = ++recommendationRequest.current;
     setGenerating(true);
     setNotice(null);
     setGroupRecommendations([]);
     try {
       const ratingFeedback = await getUserRatingFeedback(user.uid);
+      if (request !== recommendationRequest.current) return;
 
       const res = await fetch('/api/recommendations', {
         method: 'POST',
@@ -178,12 +189,15 @@ export const GroupsPage: React.FC = () => {
       });
       if (!res.ok) throw new Error(`Recommendations returned ${res.status}`);
       const data = await res.json();
+      if (request !== recommendationRequest.current) return;
       setGroupRecommendations(Array.isArray(data.results) ? data.results : []);
     } catch (err) {
       console.error('Error generating group recommendations:', err);
-      setNotice('Could not generate picks. Please try again.');
+      if (request === recommendationRequest.current) {
+        setNotice('Could not generate picks. Please try again.');
+      }
     } finally {
-      setGenerating(false);
+      if (request === recommendationRequest.current) setGenerating(false);
     }
   };
 
@@ -288,7 +302,7 @@ export const GroupsPage: React.FC = () => {
               groups.map((grp) => (
                 <button
                   key={grp.id}
-                  onClick={() => setSelectedGroup(grp)}
+                  onClick={() => selectGroup(grp)}
                   className={`w-full p-4 rounded-xl border text-left transition-colors flex items-center justify-between cursor-pointer ${
                     selectedGroup?.id === grp.id
                       ? 'bg-[#10283F] border-[#D9B66F] text-[#F7F2E9]'
@@ -394,3 +408,4 @@ export const GroupsPage: React.FC = () => {
     </div>
   );
 };
+

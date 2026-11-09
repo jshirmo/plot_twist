@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { SavedMediaItem, SwipeDecisionRecord } from '../types';
 import { getUserSavedMedia, removeSavedMedia, updateMediaStatus, getUserSwipeHistory } from '../lib/mediaService';
@@ -14,32 +14,45 @@ export const LibraryPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadRequest = useRef(0);
 
   const loadData = async () => {
     if (!user) return;
+    const request = ++loadRequest.current;
     setLoading(true);
     setActionError(null);
+    setLoadError(null);
     try {
       const [media, swipes] = await Promise.all([
         getUserSavedMedia(user.uid),
         getUserSwipeHistory(user.uid),
       ]);
+      if (request !== loadRequest.current) return;
       setSavedItems(media || []);
       setSwipeHistory(swipes || []);
     } catch (err) {
       console.error('Failed to load library data:', err);
+      if (request === loadRequest.current) {
+        setLoadError('Could not load your library. Use Refresh Library to try again.');
+      }
     } finally {
-      setLoading(false);
+      if (request === loadRequest.current) setLoading(false);
     }
   };
 
   useEffect(() => {
+    setSavedItems([]);
+    setSwipeHistory([]);
+    setLoadError(null);
+    setActionError(null);
     if (user) {
       loadData();
     } else {
       setLoading(false);
     }
-  }, [user]);
+    return () => { loadRequest.current += 1; };
+  }, [user?.uid]);
 
   const handleRemove = async (item: SavedMediaItem) => {
     setPendingId(item.id);
@@ -55,18 +68,18 @@ export const LibraryPage: React.FC = () => {
     }
   };
 
-  const handleMarkCompleted = async (item: SavedMediaItem) => {
+  const handleStatusChange = async (item: SavedMediaItem, status: SavedMediaItem['status']) => {
     setPendingId(item.id);
     setActionError(null);
     try {
-      await updateMediaStatus(item.mediaId, 'completed', undefined, undefined, item.mediaType);
+      await updateMediaStatus(item.mediaId, status, undefined, undefined, item.mediaType);
       // Finishing a title is distinct from liking it.
       setSavedItems((prev) =>
-        prev.map((saved) => saved.id === item.id ? { ...saved, status: 'completed' } : saved)
+        prev.map((saved) => saved.id === item.id ? { ...saved, status } : saved)
       );
     } catch (err) {
-      console.error('Error marking completed:', err);
-      setActionError('Could not mark this title finished. Please try again.');
+      console.error('Error changing status:', err);
+      setActionError('Could not update this title’s status. Please try again.');
     } finally {
       setPendingId(null);
     }
@@ -153,6 +166,7 @@ export const LibraryPage: React.FC = () => {
         </div>
         <button
           onClick={loadData}
+          disabled={loading || pendingId !== null}
           className="self-start sm:self-auto px-3.5 py-1.5 bg-[#10283F] hover:bg-[#10283F]/80 text-[#D9B66F] border border-[#10283F] rounded-lg text-xs font-semibold cursor-pointer"
         >
           Refresh Library
@@ -201,8 +215,10 @@ export const LibraryPage: React.FC = () => {
         </p>
       )}
 
+      {loadError && <p role="alert" className="rounded-lg border border-rose-600/50 p-3 text-sm text-rose-300">{loadError}</p>}
+
       {/* Passed items across all formats, including Kai's active swipe history. */}
-      {!loading && activeTab === 'passed' && (
+      {!loading && !loadError && activeTab === 'passed' && (
         <div className="space-y-4">
           <p className="text-xs text-[#F7F2E9]/70">
             Titles you passed on, across movies, TV, books, and podcasts.
@@ -245,7 +261,7 @@ export const LibraryPage: React.FC = () => {
       )}
 
       {/* Media Items View */}
-      {!loading && activeTab !== 'passed' && (
+      {!loading && !loadError && activeTab !== 'passed' && (
         <>
           {currentItems.length === 0 ? (
             <div className="py-20 text-center space-y-3">
@@ -297,6 +313,23 @@ export const LibraryPage: React.FC = () => {
                         </p>
                       )}
 
+                      <label className="block pt-2 text-xs text-[#F7F2E9]/60">
+                        Status
+                        <select
+                          aria-label={`Status for ${item.title}`}
+                          value={item.status}
+                          disabled={pendingId !== null}
+                          onChange={(event) => handleStatusChange(item, event.target.value as SavedMediaItem['status'])}
+                          className="mt-1 block w-full rounded-lg border border-[#10283F] bg-[#091A2B] px-3 py-2 text-[#F7F2E9] disabled:opacity-50"
+                        >
+                          <option value="watchlist">Saved for later</option>
+                          {item.mediaType === 'book' ? <option value="reading">Reading</option>
+                            : item.mediaType === 'podcast' ? <option value="listening">Listening</option>
+                            : <option value="watching">Watching</option>}
+                          <option value="completed">Completed</option>
+                        </select>
+                      </label>
+
                       {/* Enjoyment rating for completed items */}
                       {item.status === 'completed' && (
                         <div className="pt-2 flex items-center justify-between text-xs">
@@ -336,7 +369,7 @@ export const LibraryPage: React.FC = () => {
                   <div className="p-4 border-t border-[#10283F] flex items-center justify-between bg-[#10283F]/20">
                     {item.status !== 'completed' ? (
                       <button
-                        onClick={() => handleMarkCompleted(item)}
+                        onClick={() => handleStatusChange(item, 'completed')}
                         disabled={pendingId !== null}
                         className="text-xs font-semibold text-[#D9B66F] hover:text-[#D9B66F]/80 flex items-center gap-1 cursor-pointer"
                       >
@@ -369,3 +402,4 @@ export const LibraryPage: React.FC = () => {
     </div>
   );
 };
+

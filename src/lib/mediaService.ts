@@ -2,7 +2,6 @@ import {
   collection,
   doc,
   setDoc,
-  getDoc,
   updateDoc,
   deleteDoc,
   getDocs,
@@ -21,18 +20,18 @@ function mediaDocumentId(userId: string, mediaId: string, mediaType?: MediaType)
 }
 
 async function findSavedDocument(userId: string, mediaId: string, mediaType?: MediaType) {
-  const types: MediaType[] = mediaType ? [mediaType] : ['movie'];
-  for (const type of types) {
-    const typedRef = doc(db, 'savedMedia', mediaDocumentId(userId, mediaId, type));
-    if ((await getDoc(typedRef)).exists()) return typedRef;
-  }
-
-  const legacyRef = doc(db, 'savedMedia', mediaDocumentId(userId, mediaId));
-  const legacy = await getDoc(legacyRef);
-  if (legacy.exists() && (!mediaType || legacy.data().mediaType === mediaType)) {
-    return legacyRef;
-  }
-  return null;
+  // Owner-filtered queries are permitted even when no saved document exists.
+  // A direct get of a missing document is denied by the owner-based rules.
+  const snap = await getDocs(query(collection(db, 'savedMedia'), where('userId', '==', userId)));
+  const typedId = mediaDocumentId(userId, mediaId, mediaType ?? 'movie');
+  const legacyId = mediaDocumentId(userId, mediaId);
+  const matches = snap.docs.filter((saved) => {
+    const item = saved.data() as SavedMediaItem;
+    return item.mediaId === mediaId && (!mediaType || item.mediaType === mediaType);
+  });
+  return matches.find((saved) => saved.id === typedId)
+    ?? matches.find((saved) => saved.id === legacyId)
+    ?? null;
 }
 
 export async function saveMediaItem(
@@ -43,20 +42,22 @@ export async function saveMediaItem(
 
   const path = 'savedMedia';
   try {
-    const existingRef = await findSavedDocument(currentUser.uid, item.mediaId, item.mediaType);
-    const itemRef = existingRef ?? doc(db, path, mediaDocumentId(currentUser.uid, item.mediaId, item.mediaType));
-    const existingSnapshot = existingRef ? await getDoc(existingRef) : null;
-    const existing = existingSnapshot?.exists() ? existingSnapshot.data() as SavedMediaItem : null;
+    const existingSnapshot = await findSavedDocument(currentUser.uid, item.mediaId, item.mediaType);
+    const itemRef = existingSnapshot?.ref ?? doc(db, path, mediaDocumentId(currentUser.uid, item.mediaId, item.mediaType));
+    const existing = existingSnapshot ? existingSnapshot.data() as SavedMediaItem : null;
     const now = new Date().toISOString();
+    const cleanItem = Object.fromEntries(
+      Object.entries(item).filter(([, value]) => value !== undefined)
+    ) as typeof item;
 
     const fullItem: SavedMediaItem = {
-      ...item,
+      ...cleanItem,
       id: itemRef.id,
       userId: currentUser.uid,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
-      // Saving the same title again must not erase a completed review.
-      ...(existing?.status === 'completed' ? { status: 'completed' as const } : {}),
+      // Saving again must not reset progress or erase a completed review.
+      status: existing && existing.status !== 'passed' ? existing.status : item.status,
       ...(existing?.rating ? { rating: existing.rating } : {}),
     };
 
@@ -79,8 +80,8 @@ export async function updateMediaStatus(
 
   const path = 'savedMedia';
   try {
-    const itemRef = await findSavedDocument(currentUser.uid, mediaId, mediaType);
-    if (!itemRef) throw new Error('Saved title not found in your library.');
+    const saved = await findSavedDocument(currentUser.uid, mediaId, mediaType);
+    if (!saved) throw new Error('Saved title not found in your library.');
 
     const payload: Partial<SavedMediaItem> = {
       status,
@@ -90,7 +91,7 @@ export async function updateMediaStatus(
     if (userNotes !== undefined) payload.userNotes = userNotes;
 
     // updateDoc rejects missing documents rather than creating incomplete records.
-    await updateDoc(itemRef, payload);
+    await updateDoc(saved.ref, payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -102,8 +103,8 @@ export async function removeSavedMedia(mediaId: string, mediaType?: MediaType): 
 
   const path = 'savedMedia';
   try {
-    const itemRef = await findSavedDocument(currentUser.uid, mediaId, mediaType);
-    if (itemRef) await deleteDoc(itemRef);
+    const saved = await findSavedDocument(currentUser.uid, mediaId, mediaType);
+    if (saved) await deleteDoc(saved.ref);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -244,3 +245,4 @@ export async function getUserSwipeHistory(userId: string): Promise<SwipeDecision
     handleFirestoreError(error, OperationType.LIST, path);
   }
 }
+

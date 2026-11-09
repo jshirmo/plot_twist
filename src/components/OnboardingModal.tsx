@@ -81,7 +81,9 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
     setPreferredFormats(saved?.preferredFormats ?? []);
     setFavoriteStories(saved?.favoriteStories ?? []);
     setStoryElements(saved?.storyElements ?? []);
-    setDislikedGenres(saved?.dislikedGenres ?? []);
+    setDislikedGenres((saved?.dislikedGenres ?? []).filter(
+      (genre) => !saved?.preferredGenres?.includes(genre)
+    ));
     setTimeAvailability(saved?.timeAvailability ?? 'No preference');
     setStreamingServices(saved?.streamingServices ?? []);
     setCustomStoryInput('');
@@ -107,6 +109,16 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
     }
   };
 
+  const toggleGenre = (genre: string, avoid: boolean) => {
+    if (avoid) {
+      toggleItem(dislikedGenres, genre, setDislikedGenres);
+      setPreferredGenres((genres) => genres.filter((value) => value !== genre));
+    } else {
+      toggleItem(preferredGenres, genre, setPreferredGenres);
+      setDislikedGenres((genres) => genres.filter((value) => value !== genre));
+    }
+  };
+
   const handleFinish = async () => {
     setSaving(true);
     try {
@@ -115,7 +127,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
         preferredFormats,
         favoriteStories,
         storyElements,
-        dislikedGenres,
+        dislikedGenres: dislikedGenres.filter((genre) => !preferredGenres.includes(genre)),
         timeAvailability,
         streamingServices,
         aiTasteSummary: `Drawn to ${preferredGenres.slice(0, 3).join(', ')} with an emphasis on ${storyElements.slice(0, 2).join(' & ')}.`,
@@ -186,12 +198,15 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
           {/* Step 1: Genres */}
           {step === 1 && (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+              <p className="col-span-full text-xs text-[#F7F2E9]/70">
+                Choosing a genre here removes it from your genres to avoid.
+              </p>
               {STORY_GENRES.map((genre) => {
                 const selected = preferredGenres.includes(genre);
                 return (
                   <button
                     key={genre}
-                    onClick={() => toggleItem(preferredGenres, genre, setPreferredGenres)}
+                    onClick={() => toggleGenre(genre, false)}
                     className={`p-3 rounded-xl border text-sm font-medium text-left transition-all flex items-center justify-between cursor-pointer ${
                       selected
                         ? 'bg-[#10283F] border-[#D9B66F] text-[#F7F2E9] shadow-sm'
@@ -330,7 +345,8 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
           {step === 5 && (
             <div className="space-y-3">
               <p className="text-xs text-[#F7F2E9]/70">
-                Select any genres you prefer not to see recommendations for (optional):
+                Select any genres you prefer not to see recommendations for (optional).
+                Choosing a genre here removes it from your preferred genres.
               </p>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                 {STORY_GENRES.map((genre) => {
@@ -338,7 +354,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
                   return (
                     <button
                       key={genre}
-                      onClick={() => toggleItem(dislikedGenres, genre, setDislikedGenres)}
+                      onClick={() => toggleGenre(genre, true)}
                       className={`p-3 rounded-xl border text-sm font-medium text-left transition-all flex items-center justify-between cursor-pointer ${
                         selected
                           ? 'bg-red-950/40 border-red-500/80 text-red-200'
@@ -444,3 +460,4 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
     </div>
   );
 };
+
