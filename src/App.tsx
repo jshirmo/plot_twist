@@ -13,6 +13,7 @@ import { DiscoverPage } from './pages/DiscoverPage';
 import { MovieSwipePage } from './pages/MovieSwipePage';
 import { LibraryPage } from './pages/LibraryPage';
 import { GroupsPage } from './pages/GroupsPage';
+import { NearYouPage } from './pages/NearYouPage';
 import { ScanPage } from './pages/ScanPage';
 import { ProfilePage } from './pages/ProfilePage';
 
@@ -56,6 +57,7 @@ function AppContent() {
         {activeTab === 'swipe' && <MovieSwipePage />}
         {activeTab === 'library' && <LibraryPage />}
         {activeTab === 'groups' && <GroupsPage />}
+        {activeTab === 'near-you' && <NearYouPage />}
         {activeTab === 'scan' && <ScanPage />}
         {activeTab === 'profile' && (
           <ProfilePage onOpenOnboarding={() => setOnboardingOpen(true)} />

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Film, Compass, Layers, Bookmark, Users, Camera, User, LogIn, LogOut, Menu, X } from 'lucide-react';
+import { Film, Compass, Layers, Bookmark, Users, Camera, MapPin, User, LogIn, LogOut, Menu, X } from 'lucide-react';
 
 interface NavbarProps {
   activeTab: string;
@@ -15,6 +15,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenO
   const navItems = [
     { id: 'home', label: 'Home', icon: Film },
     { id: 'discover', label: 'Discover', icon: Compass },
+    { id: 'near-you', label: 'Near You', icon: MapPin },
     { id: 'swipe', label: 'Movie Swipe', icon: Layers },
     { id: 'library', label: 'My Library', icon: Bookmark },
     { id: 'groups', label: 'Groups', icon: Users },
@@ -42,7 +43,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenO
           </button>
 
           {/* Zone 2: Navigation Links (Desktop) */}
-          <nav className="hidden md:flex items-center gap-6 text-sm font-medium">
+          <nav className="hidden xl:flex items-center gap-6 text-sm font-medium">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
@@ -112,7 +113,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenO
             {/* Mobile Hamburger Button */}
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="md:hidden p-2 text-[#F7F2E9]/80 hover:text-[#F7F2E9] hover:bg-[#10283F] rounded-md"
+              className="xl:hidden p-2 text-[#F7F2E9]/80 hover:text-[#F7F2E9] hover:bg-[#10283F] rounded-md"
               aria-label="Toggle navigation menu"
             >
               {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
@@ -123,7 +124,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenO
 
       {/* Mobile Drawer Menu */}
       {mobileMenuOpen && (
-        <div className="md:hidden bg-[#091A2B] border-b border-[#10283F] px-4 pt-2 pb-4 space-y-1">
+        <div className="xl:hidden bg-[#091A2B] border-b border-[#10283F] px-4 pt-2 pb-4 space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
