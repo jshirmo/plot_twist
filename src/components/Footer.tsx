@@ -25,6 +25,9 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
             <button onClick={() => onNavigate('discover')} className="hover:text-[#F7F2E9] transition-colors cursor-pointer">
               Discover
             </button>
+            <button onClick={() => onNavigate('near-you')} className="hover:text-[#F7F2E9] transition-colors cursor-pointer">
+              Near You
+            </button>
             <button onClick={() => onNavigate('swipe')} className="hover:text-[#F7F2E9] transition-colors cursor-pointer">
               Movie Swipe
             </button>
