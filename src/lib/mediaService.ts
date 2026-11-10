@@ -1,3 +1,4 @@
+import type { RecommendationRatingFeedback } from '../types';
 import {
   collection,
   doc,
@@ -124,19 +125,6 @@ export async function getUserSavedMedia(userId: string): Promise<SavedMediaItem[
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }
-}
-
-// Request contract proposed to Ben: only completed Liked/Disliked titles count.
-// Keep user data in this existing savedMedia collection; no new Firestore fields.
-export interface RatedTitleFeedback {
-  title: string;
-  mediaType: MediaType;
-  genres: string[];
-}
-
-export interface RecommendationRatingFeedback {
-  liked: RatedTitleFeedback[];
-  disliked: RatedTitleFeedback[];
 }
 
 export async function getUserRatingFeedback(userId: string): Promise<RecommendationRatingFeedback> {

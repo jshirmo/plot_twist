@@ -1,5 +1,16 @@
 export type MediaType = 'movie' | 'tv' | 'book' | 'podcast';
 
+export interface RatedTitleFeedback {
+  title: string;
+  mediaType: MediaType;
+  genres: string[];
+}
+
+export interface RecommendationRatingFeedback {
+  liked: RatedTitleFeedback[];
+  disliked: RatedTitleFeedback[];
+}
+
 export interface MoodSettings {
   darkness: number;          // 1 (Light & uplifting) - 5 (Dark & intense)
   romance: number;           // 1 (No romance) - 5 (Romance-heavy)

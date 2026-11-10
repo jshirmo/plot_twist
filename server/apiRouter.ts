@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { generateRecommendations, scanMediaPosterOrCover } from './geminiService';
+import { parseRatingFeedback } from './ratingFeedback';
 import { VERIFIED_CATALOG } from './mediaCatalog';
 import { searchPodcasts, getTrendingPodcasts, getPodcastEpisodes, podcastSource } from './podcastService';
 import { getLiveEvents, getNearbyBookstores, localServiceStatus, type LocationQuery } from './localService';
@@ -22,6 +23,7 @@ apiRouter.post('/recommendations', async (req: Request, res: Response) => {
       maxDurationMinutes,
       streamingServices,
       excludedMediaIds,
+      ratingFeedback: parseRatingFeedback(req.body.ratingFeedback),
     });
 
     return res.json({ results });

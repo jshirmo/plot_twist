@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { MoodSettings, MediaType, SavedMediaItem } from '../types';
-import { saveMediaItem } from '../lib/mediaService';
+import { getUserRatingFeedback, saveMediaItem } from '../lib/mediaService';
 import { Sparkles, Sliders, Film, Tv, BookOpen, Radio, Bookmark, Check, Info, Clock, AlertCircle } from 'lucide-react';
 
 interface RecommendationCardItem {
@@ -71,14 +71,17 @@ export const DiscoverPage: React.FC = () => {
   const handleFindPlotTwist = async () => {
     setLoading(true);
     setStatusMessage(null);
+    setRecommendations([]);
 
     try {
+      const ratingFeedback = user ? await getUserRatingFeedback(user.uid) : undefined;
       const response = await fetch('/api/recommendations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           moodSettings: mood,
           tasteProfile: userProfile?.tasteProfile,
+          ratingFeedback,
           formats: selectedFormats,
           maxDurationMinutes: durationLimit > 0 ? durationLimit : undefined,
           streamingServices: selectedStreamers.length > 0 ? selectedStreamers : undefined,
@@ -90,7 +93,9 @@ export const DiscoverPage: React.FC = () => {
       }
 
       const data = await response.json();
-      setRecommendations(data.results || []);
+      const results = data.results || [];
+      setRecommendations(results);
+      if (results.length === 0) setStatusMessage('No titles match these filters. Try expanding your search.');
     } catch (err) {
       console.error('Failed to get recommendations:', err);
       setStatusMessage('Failed to fetch recommendations. Please try again.');
