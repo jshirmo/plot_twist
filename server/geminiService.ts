@@ -47,7 +47,7 @@ export async function generateRecommendations(params: {
     mood: params.moodSettings,
   });
   const candidates = excludeDislikedTitles(
-    catalog.filter((item) => !excludedIds.has(item.id) && !excludedIds.has(item.catalogId)),
+    catalog.filter((item) => !excludedIds.has(item.id)),
     params.ratingFeedback,
   );
   if (candidates.length === 0) return [];

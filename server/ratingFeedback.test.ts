@@ -34,3 +34,40 @@ test('excluding the entire filtered format returns no matches without widening t
   });
   assert.deepEqual(results, []);
 });
+
+test('Gemini can rank real filtered titles but cannot add titles or replace metadata', async (t) => {
+  const keys = ['TMDB_API_KEY', 'GEMINI_API_KEY', 'GEMINI_RECOMMENDATION_MODEL'] as const;
+  const previous = keys.map((key) => process.env[key]);
+  delete process.env.TMDB_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-key';
+  delete process.env.GEMINI_RECOMMENDATION_MODEL;
+  t.after(() => keys.forEach((key, index) => {
+    const value = previous[index];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }));
+  const [disliked, allowed] = VERIFIED_CATALOG.filter((item) => item.mediaType === 'movie');
+  let requestUrl = '';
+  let prompt = '';
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    requestUrl = String(input);
+    prompt = String(init?.body);
+    const output = [
+      { id: 'invented', compatibilityScore: 99, aiExplanation: 'Invented' },
+      { id: disliked.id, compatibilityScore: 98, aiExplanation: 'Disliked' },
+      { id: allowed.id, title: 'Made up title', compatibilityScore: 95, aiExplanation: 'Matches your mood.' },
+      { id: allowed.id, compatibilityScore: 94, aiExplanation: 'Duplicate' },
+    ];
+    return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(output) }] } }] });
+  });
+
+  const results = await generateRecommendations({
+    moodSettings: mood,
+    formats: ['movie'],
+    ratingFeedback: { liked: [allowed], disliked: [disliked] },
+  });
+  assert.match(requestUrl, /gemini-3\.8-flash:generateContent/);
+  assert.ok(prompt.includes(allowed.title));
+  assert.deepEqual(results.map(({ id, title }) => ({ id, title })), [{ id: allowed.id, title: allowed.title }]);
+  assert.equal(results[0].compatibilityScore, 95);
+});
