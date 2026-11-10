@@ -23,6 +23,6 @@ jobs:
       - name: Install dependencies and emulator tools (CI only)
         run: |
           npm install
-          npm install --no-save firebase-tools @firebase/rules-unit-testing
+          npm install --no-save --legacy-peer-deps firebase-tools @firebase/rules-unit-testing
       - name: Exercise group membership permissions against Firestore emulator
         run: npx firebase emulators:exec --only firestore --project plot-twist-rules-test 'node --test tests/firestore.rules.test.mjs'
