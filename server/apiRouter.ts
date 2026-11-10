@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { generateRecommendations, scanMediaPosterOrCover } from './geminiService';
 import { parseRatingFeedback } from './ratingFeedback';
-import { VERIFIED_CATALOG } from './mediaCatalog';
+import { loadCatalog, VERIFIED_CATALOG } from './mediaCatalog';
 import { searchPodcasts, getTrendingPodcasts, getPodcastEpisodes, podcastSource } from './podcastService';
 import { getLiveEvents, getNearbyBookstores, localServiceStatus, type LocationQuery } from './localService';
 
@@ -97,8 +97,11 @@ apiRouter.post('/scan', async (req: Request, res: Response) => {
 });
 
 // Endpoint to search or browse catalog
-apiRouter.get('/catalog', (_req: Request, res: Response) => {
-  return res.json({ catalog: VERIFIED_CATALOG });
+apiRouter.get('/catalog', async (req: Request, res: Response) => {
+  const search = typeof req.query.q === 'string' ? req.query.q : undefined;
+  const formats = typeof req.query.format === 'string' ? req.query.format.split(',') : undefined;
+  const catalog = await loadCatalog({ search, formats });
+  return res.json({ catalog });
 });
 
 // ---------------------------------------------------------------------------
