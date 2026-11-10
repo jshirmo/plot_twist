@@ -1,4 +1,8 @@
-export interface CatalogMediaItem {
+import { getPodcastCandidates, getPodcastEpisodes } from './podcastService';
+import { cachedCatalogRequest, loadGoogleBooks, loadTmdbTitles, normalizeProvider } from './catalogProviders';
+import type { CatalogDisplayMetadata, MediaType, MoodSettings } from '../src/types';
+
+export interface CatalogMediaItem extends CatalogDisplayMetadata {
   id: string;
   catalogId: string;
   source: 'tmdb' | 'google_books' | 'podcast';
@@ -12,7 +16,6 @@ export interface CatalogMediaItem {
   runtimeMinutes?: number;
   overview: string;
   streamingProviders?: string[];
-  pageCount?: number;
   episodeCount?: number;
   moodTags: {
     darkness: number;      // 1-5
@@ -335,43 +338,100 @@ export const VERIFIED_CATALOG: CatalogMediaItem[] = [
   }
 ];
 
-export function getFilteredCatalogCandidates(filters: {
+interface CatalogFilters {
   formats?: string[];
   maxDurationMinutes?: number;
   streamingServices?: string[];
-}): CatalogMediaItem[] {
-  return VERIFIED_CATALOG.filter((item) => {
-    // Media format filter
-    if (filters.formats && filters.formats.length > 0) {
-      if (!filters.formats.includes(item.mediaType)) {
-        return false;
-      }
-    }
+}
 
-    // Duration filter
+export function getFilteredCatalogCandidates(
+  filters: CatalogFilters,
+  catalog: CatalogMediaItem[] = VERIFIED_CATALOG,
+): CatalogMediaItem[] {
+  const services = new Set(filters.streamingServices?.map(normalizeProvider));
+  return catalog.filter((item) => {
+    if (filters.formats?.length && !filters.formats.includes(item.mediaType)) return false;
+
     if (filters.maxDurationMinutes && filters.maxDurationMinutes > 0) {
-      if (item.runtimeMinutes && item.runtimeMinutes > filters.maxDurationMinutes) {
-        return false;
-      }
-      if (item.pageCount && item.pageCount > filters.maxDurationMinutes * 2) {
-        // approx 1 page = 1-2 mins
-        return false;
-      }
+      const minutes = item.mediaType === 'book' && item.pageCount
+        ? Math.ceil(item.pageCount / 2)
+        : item.runtimeMinutes;
+      if (!minutes || minutes > filters.maxDurationMinutes) return false;
     }
 
-    // Streaming services filter (only for video/podcast with streaming info)
-    if (filters.streamingServices && filters.streamingServices.length > 0) {
-      if (item.streamingProviders && item.streamingProviders.length > 0) {
-        const hasService = item.streamingProviders.some((p) =>
-          filters.streamingServices!.some(s => s.toLowerCase() === p.toLowerCase())
-        );
-        if (!hasService && (item.mediaType === 'movie' || item.mediaType === 'tv')) {
-          // If the user strictly filtered by streaming service, exclude items not on those services
-          return false;
-        }
-      }
+    if (services.size && (item.mediaType === 'movie' || item.mediaType === 'tv')) {
+      return item.streamingProviders?.some((service) => services.has(normalizeProvider(service))) ?? false;
     }
-
     return true;
   });
+}
+
+export interface LiveCatalogOptions extends CatalogFilters {
+  search?: string;
+  preferredGenres?: string[];
+  mood?: MoodSettings;
+}
+
+const formats: MediaType[] = ['movie', 'tv', 'book', 'podcast'];
+
+export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<CatalogMediaItem[]> {
+  const selected = options.formats?.length
+    ? formats.filter((format) => options.formats?.includes(format))
+    : formats;
+  const search = options.search?.trim().slice(0, 100) ?? '';
+  const preferredGenre = options.preferredGenres?.find((genre) => typeof genre === 'string' && genre.trim())
+    ?.trim().slice(0, 50);
+  const bookGenre = preferredGenre || (options.mood && options.mood.romance >= 4 ? 'romance'
+    : options.mood && options.mood.suspense >= 4 ? 'mystery' : 'fiction');
+
+  const batches = await Promise.all(selected.map(async (format): Promise<CatalogMediaItem[]> => {
+    try {
+      if (format === 'book') return await loadGoogleBooks(search || `subject:${bookGenre}`);
+      if (format === 'podcast') {
+        const terms = search ? [search] : preferredGenre ? [preferredGenre] : [];
+        const podcasts = await cachedCatalogRequest(`podcasts:${terms.join('|').toLowerCase()}`, 30 * 60_000,
+          () => getPodcastCandidates({ terms, max: 16 }));
+        const marked = podcasts.map((item): CatalogMediaItem => ({
+          ...item,
+          catalogOrigin: VERIFIED_CATALOG.some((entry) => entry.id === item.id) ? 'fallback' : 'live',
+        }));
+        if (!options.maxDurationMinutes) return marked;
+        const measured = await Promise.all(marked.slice(0, 8).map(async (item) => {
+          if (item.runtimeMinutes || !/^\d+$/.test(item.catalogId)) return item;
+          try {
+            const episodes = await cachedCatalogRequest(`podcast-duration:${item.id}`, 30 * 60_000,
+              () => getPodcastEpisodes(item.catalogId, 3));
+            const minutes = episodes.find((episode) => (episode.durationMinutes ?? 0) > 0)?.durationMinutes;
+            return { ...item, runtimeMinutes: minutes };
+          } catch {
+            return item;
+          }
+        }));
+        if (measured.some((item) => item.runtimeMinutes)) return measured;
+        return VERIFIED_CATALOG.filter((item) => item.mediaType === 'podcast')
+          .map((item) => ({ ...item, catalogOrigin: 'fallback' }));
+      }
+      const titles = await loadTmdbTitles(format, search, options.streamingServices ?? [], options.maxDurationMinutes);
+      return titles.map((title) => {
+        const fallback = VERIFIED_CATALOG.find((item) => item.mediaType === format && item.catalogId === title.catalogId);
+        return fallback ? { ...title, id: fallback.id } : title;
+      });
+    } catch {
+      return VERIFIED_CATALOG.filter((item) => item.mediaType === format)
+        .map((item) => ({ ...item, catalogOrigin: 'fallback' }));
+    }
+  }));
+
+  const query = search.toLowerCase();
+  const unique = new Map<string, CatalogMediaItem>();
+  for (const item of batches.flat()) {
+    // Provider search already matches live metadata; filter local fallbacks and podcast trending results.
+    if (query && (item.catalogOrigin === 'fallback' || item.mediaType === 'podcast')) {
+      const searchable = [item.title, item.creator, ...item.genres].join(' ').toLowerCase();
+      if (!searchable.includes(query)) continue;
+    }
+    const key = `${item.mediaType}:${item.title.toLowerCase()}:${item.creator.toLowerCase()}`;
+    if (!unique.has(key)) unique.set(key, item);
+  }
+  return getFilteredCatalogCandidates(options, [...unique.values()]);
 }
