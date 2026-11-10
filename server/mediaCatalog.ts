@@ -1,8 +1,8 @@
-import { getPodcastCandidates } from './podcastService';
+import { getPodcastCandidates, getPodcastEpisodes } from './podcastService';
 import { cachedCatalogRequest, loadGoogleBooks, loadTmdbTitles, normalizeProvider } from './catalogProviders';
-import type { MediaType, MoodSettings } from '../src/types';
+import type { CatalogDisplayMetadata, MediaType, MoodSettings } from '../src/types';
 
-export interface CatalogMediaItem {
+export interface CatalogMediaItem extends CatalogDisplayMetadata {
   id: string;
   catalogId: string;
   source: 'tmdb' | 'google_books' | 'podcast';
@@ -16,10 +16,7 @@ export interface CatalogMediaItem {
   runtimeMinutes?: number;
   overview: string;
   streamingProviders?: string[];
-  pageCount?: number;
   episodeCount?: number;
-  providerUrl?: string;
-  catalogOrigin?: 'live' | 'fallback';
   moodTags: {
     darkness: number;      // 1-5
     romance: number;       // 1-5
@@ -392,8 +389,27 @@ export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<Cat
       if (format === 'book') return await loadGoogleBooks(search || `subject:${bookGenre}`);
       if (format === 'podcast') {
         const terms = search ? [search] : preferredGenre ? [preferredGenre] : [];
-        return await cachedCatalogRequest(`podcasts:${terms.join('|').toLowerCase()}`, 30 * 60_000,
+        const podcasts = await cachedCatalogRequest(`podcasts:${terms.join('|').toLowerCase()}`, 30 * 60_000,
           () => getPodcastCandidates({ terms, max: 16 }));
+        const marked = podcasts.map((item): CatalogMediaItem => ({
+          ...item,
+          catalogOrigin: VERIFIED_CATALOG.some((entry) => entry.id === item.id) ? 'fallback' : 'live',
+        }));
+        if (!options.maxDurationMinutes) return marked;
+        const measured = await Promise.all(marked.slice(0, 8).map(async (item) => {
+          if (item.runtimeMinutes || !/^\d+$/.test(item.catalogId)) return item;
+          try {
+            const episodes = await cachedCatalogRequest(`podcast-duration:${item.id}`, 30 * 60_000,
+              () => getPodcastEpisodes(item.catalogId, 3));
+            const minutes = episodes.find((episode) => (episode.durationMinutes ?? 0) > 0)?.durationMinutes;
+            return { ...item, runtimeMinutes: minutes };
+          } catch {
+            return item;
+          }
+        }));
+        if (measured.some((item) => item.runtimeMinutes)) return measured;
+        return VERIFIED_CATALOG.filter((item) => item.mediaType === 'podcast')
+          .map((item) => ({ ...item, catalogOrigin: 'fallback' }));
       }
       const titles = await loadTmdbTitles(format, search, options.streamingServices ?? [], options.maxDurationMinutes);
       return titles.map((title) => {

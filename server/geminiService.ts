@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { CatalogMediaItem, getFilteredCatalogCandidates } from './mediaCatalog';
-import { MoodSettings, RecommendationRatingFeedback, TasteProfile } from '../src/types';
+import { CatalogMediaItem, loadCatalog } from './mediaCatalog';
+import type { CatalogDisplayMetadata, MoodSettings, RecommendationRatingFeedback, TasteProfile } from '../src/types';
 import { excludeDislikedTitles, ratingGenreSignals } from './ratingFeedback';
 
 const ai = new GoogleGenAI({
@@ -12,7 +12,7 @@ const ai = new GoogleGenAI({
   },
 });
 
-export interface RecommendationResult {
+export interface RecommendationResult extends CatalogDisplayMetadata {
   catalogId: string;
   id: string;
   title: string;
@@ -25,6 +25,7 @@ export interface RecommendationResult {
   overview: string;
   streamingProviders?: string[];
   compatibilityScore: number;
+  source: CatalogMediaItem['source'];
   aiExplanation: string;
 }
 
@@ -38,8 +39,15 @@ export async function generateRecommendations(params: {
   ratingFeedback?: RecommendationRatingFeedback;
 }): Promise<RecommendationResult[]> {
   const excludedIds = new Set(params.excludedMediaIds);
+  const catalog = await loadCatalog({
+    formats: params.formats,
+    maxDurationMinutes: params.maxDurationMinutes,
+    streamingServices: params.streamingServices,
+    preferredGenres: params.tasteProfile?.preferredGenres,
+    mood: params.moodSettings,
+  });
   const candidates = excludeDislikedTitles(
-    getFilteredCatalogCandidates(params).filter((item) => !excludedIds.has(item.id)),
+    catalog.filter((item) => !excludedIds.has(item.id) && !excludedIds.has(item.catalogId)),
     params.ratingFeedback,
   );
   if (candidates.length === 0) return [];
@@ -47,7 +55,10 @@ export async function generateRecommendations(params: {
   const rankLocally = () =>
     rankCandidatesLocally(candidates, params.moodSettings, params.tasteProfile, params.ratingFeedback);
 
-  if (!process.env.GEMINI_API_KEY) return rankLocally();
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return rankLocally();
+  const model = process.env.GEMINI_RECOMMENDATION_MODEL?.trim() || 'gemini-3.8-flash';
+  const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: 8000 } });
 
   try {
     const candidateSummary = candidates.map((c) => ({
@@ -92,13 +103,8 @@ CRITICAL RULES:
 Candidates JSON:
 ${JSON.stringify(candidateSummary, null, 2)}`;
 
-    // Set 6-second timeout race to ensure fast, reliable response
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Gemini API timeout')), 6000)
-    );
-
-    const callPromise = ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+    const response = await client.models.generateContent({
+      model,
       contents: prompt,
       config: {
         systemInstruction: 'You are an expert entertainment curator. Always return strictly valid JSON matching the requested schema. Never invent media titles.',
@@ -118,45 +124,41 @@ ${JSON.stringify(candidateSummary, null, 2)}`;
       },
     });
 
-    const response = await Promise.race([callPromise, timeoutPromise]);
-    const parsed = JSON.parse(response.text || '[]') as Array<{
-      id: string;
-      compatibilityScore: number;
-      aiExplanation: string;
-    }>;
+    const parsed: unknown = JSON.parse(response.text || '[]');
+    if (!Array.isArray(parsed)) return rankLocally();
 
-    // Validate that every returned ID belongs to a real candidate from our verified catalog
-    const verifiedResults: RecommendationResult[] = [];
+    // Validate model IDs against the exact filtered candidates shown in the prompt.
+    const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+    const verifiedResults = new Map<string, RecommendationResult>();
     for (const item of parsed) {
-      const match = candidates.find((c) => c.id === item.id);
-      if (match) {
-        verifiedResults.push({
-          id: match.id,
-          catalogId: match.catalogId,
-          title: match.title,
-          mediaType: match.mediaType,
-          creator: match.creator,
-          releaseYear: match.releaseYear,
-          posterUrl: match.posterUrl,
-          genres: match.genres,
-          runtimeMinutes: match.runtimeMinutes,
-          overview: match.overview,
-          streamingProviders: match.streamingProviders,
-          compatibilityScore: item.compatibilityScore || 85,
-          aiExplanation: item.aiExplanation || `Selected based on your mood for ${match.genres.join(', ')}.`,
-        });
-      }
+      if (!item || typeof item.id !== 'string' || verifiedResults.has(item.id)) continue;
+      const match = byId.get(item.id);
+      if (!match || !Number.isFinite(item.compatibilityScore) ||
+          typeof item.aiExplanation !== 'string' || !item.aiExplanation.trim()) continue;
+      verifiedResults.set(item.id, {
+        ...toRecommendationMetadata(match),
+        compatibilityScore: Math.max(60, Math.min(99, Math.round(item.compatibilityScore))),
+        aiExplanation: item.aiExplanation.trim().slice(0, 500),
+      });
     }
 
-    if (verifiedResults.length > 0) {
-      return verifiedResults;
+    if (verifiedResults.size) {
+      return [...verifiedResults.values()].sort((a, b) => b.compatibilityScore - a.compatibilityScore).slice(0, 6);
     }
 
     return rankLocally();
   } catch (error) {
-    console.error('Gemini recommendation error or timeout, using local ranking:', error);
+    console.warn('Gemini recommendation failed; using local ranking.',
+      error instanceof Error ? error.name : 'Unknown error');
     return rankLocally();
   }
+}
+
+function toRecommendationMetadata(item: CatalogMediaItem) {
+  const { id, catalogId, source, title, mediaType, creator, releaseYear, posterUrl, genres,
+    runtimeMinutes, overview, streamingProviders, pageCount, providerUrl, catalogOrigin } = item;
+  return { id, catalogId, source, title, mediaType, creator, releaseYear, posterUrl, genres,
+    runtimeMinutes, overview, streamingProviders, pageCount, providerUrl, catalogOrigin };
 }
 
 export function rankCandidatesLocally(
@@ -192,17 +194,7 @@ export function rankCandidatesLocally(
     const finalScore = Math.max(60, Math.min(99, moodScore + genreBoost + ratingAdjustment));
 
     return {
-      id: item.id,
-      catalogId: item.catalogId,
-      title: item.title,
-      mediaType: item.mediaType,
-      creator: item.creator,
-      releaseYear: item.releaseYear,
-      posterUrl: item.posterUrl,
-      genres: item.genres,
-      runtimeMinutes: item.runtimeMinutes,
-      overview: item.overview,
-      streamingProviders: item.streamingProviders,
+      ...toRecommendationMetadata(item),
       compatibilityScore: finalScore,
       aiExplanation: ratingAdjustment > 0
         ? 'Fits your current mood and shares genres with titles you liked.'
