@@ -1,7 +1,10 @@
 {
-  "firestore": {
-    "rules": "firestore.rules"
-  },
+  "firestore": [
+    {
+      "database": "ai-studio-plottwist-4d494ee4-8f55-481a-9acc-b1ebf989ad10",
+      "rules": "firestore.rules"
+    }
+  ],
   "emulators": {
     "firestore": {
       "host": "127.0.0.1",
