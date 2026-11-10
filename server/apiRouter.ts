@@ -162,8 +162,8 @@ apiRouter.get('/local/status', (_req: Request, res: Response) => {
 apiRouter.get('/local/events', async (req: Request, res: Response) => {
   try {
     const podcasts = cleanText(req.query.podcasts, 500).split('|').map((t) => t.trim()).filter(Boolean);
-    const events = await getLiveEvents(readLocation(req.query), podcasts);
-    return res.json({ events });
+    const { events, fallback } = await getLiveEvents(readLocation(req.query), podcasts);
+    return res.json({ events, fallback });
   } catch (error) {
     return localError(res, error, 'Live shows');
   }

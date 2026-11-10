@@ -31,6 +31,7 @@ interface LocalEvent {
   category?: string;
   priceRange?: string;
   matchedPodcast?: string;
+  kind?: 'podcast' | 'comedy';
 }
 
 interface Bookstore {
@@ -90,6 +91,7 @@ export const NearYouPage: React.FC = () => {
   const [status, setStatus] = useState<{ events: boolean; bookstores: boolean } | null>(null);
   const [libraryPodcasts, setLibraryPodcasts] = useState<string[]>([]);
   const [events, setEvents] = useState<Section<LocalEvent>>(emptySection());
+  const [eventsFallback, setEventsFallback] = useState(false);
   const [bookstores, setBookstores] = useState<Section<Bookstore>>(emptySection());
 
   // Which sources are set up on the server.
@@ -123,9 +125,13 @@ export const NearYouPage: React.FC = () => {
     const query = placeQuery(place);
 
     setEvents({ loading: true, error: null, items: [] });
+    setEventsFallback(false);
     const podcasts = libraryPodcasts.length ? `&podcasts=${encodeURIComponent(libraryPodcasts.join('|'))}` : '';
-    fetchJson<{ events: LocalEvent[] }>(`/api/local/events?${query}${podcasts}`)
-      .then((d) => setEvents({ loading: false, error: null, items: d.events }))
+    fetchJson<{ events: LocalEvent[]; fallback?: boolean }>(`/api/local/events?${query}${podcasts}`)
+      .then((d) => {
+        setEventsFallback(Boolean(d.fallback));
+        setEvents({ loading: false, error: null, items: d.events });
+      })
       .catch((e) => setEvents({ loading: false, error: e.message, items: [] }));
 
     setBookstores({ loading: true, error: null, items: [] });
@@ -239,15 +245,20 @@ export const NearYouPage: React.FC = () => {
           <section className="lg:col-span-3 space-y-4" aria-labelledby="live-shows-heading">
             <div className="flex items-baseline justify-between gap-3">
               <h2 id="live-shows-heading" className="flex items-center gap-2 text-xl font-serif font-bold text-[#F7F2E9]">
-                <Radio className="w-5 h-5 text-[#D9B66F]" /> Live podcast shows
+                <Radio className="w-5 h-5 text-[#D9B66F]" /> {eventsFallback ? 'Live comedy shows' : 'Live podcast shows'}
               </h2>
               <span className="text-xs text-[#F7F2E9]/50">Near {place.label} · from Ticketmaster</span>
             </div>
 
             {events.loading && <p className="py-10 text-center text-sm text-[#D9B66F] animate-pulse">Finding live shows…</p>}
+            {!events.loading && eventsFallback && events.items.length > 0 && (
+              <p className="text-sm text-[#F7F2E9]/70 bg-[#10283F]/40 border border-[#10283F] rounded-xl px-4 py-3">
+                No live podcast shows near {place.label} right now, so here are comedy shows nearby instead.
+              </p>
+            )}
             {events.error && <p className="py-6 text-sm text-[#F7F2E9]/70">{events.error}</p>}
             {!events.loading && !events.error && events.items.length === 0 && (
-              <p className="py-6 text-sm text-[#F7F2E9]/60">No live podcast shows found nearby right now.</p>
+              <p className="py-6 text-sm text-[#F7F2E9]/60">No live podcast or comedy shows found nearby right now.</p>
             )}
 
             <div className="space-y-3">

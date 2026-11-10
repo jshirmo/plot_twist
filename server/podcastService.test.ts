@@ -69,6 +69,7 @@ test('maps a Ticketmaster event and a Google place', () => {
     { lat: 29.95, lng: -90.07 }
   );
   assert.equal(ev.priceRange, '$35–$75');
+  assert.equal(ev.kind, 'podcast');
   assert.equal(ev.venueCity, 'New Orleans');
   assert.equal(ev.distanceMiles, undefined);
 
@@ -118,4 +119,43 @@ test('maps Apple Podcasts search results, chart entries and episodes', () => {
 
   assert.equal(mapApplePodcast({ artistName: 'No id' }), null);
   assert.equal(biggerArtwork('https://x/y/60x60bb.png'), 'https://x/y/600x600bb.png');
+});
+
+test('live events: podcast shows first, comedy only as a fallback', async () => {
+  process.env.TICKETMASTER_API_KEY = 'test-key';
+  const realFetch = globalThis.fetch;
+  const calls: string[] = [];
+  const tmEvent = (id: string, name: string) => ({
+    id, name, url: 'https://ticketmaster.com/' + id,
+    dates: { start: { localDate: '2026-12-01' } },
+  });
+  try {
+    // Case 1: no podcast shows -> comedy fallback, duplicates by name removed
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url));
+      const comedy = String(url).includes('classificationName=Comedy');
+      const events = comedy ? [tmEvent('c1', 'Stand-up Night'), tmEvent('c2', 'Stand-up Night'), tmEvent('c3', 'Improv Jam')] : [];
+      return new Response(JSON.stringify(events.length ? { _embedded: { events } } : {}), { status: 200 });
+    }) as typeof fetch;
+    const { getLiveEvents } = await import('./localService');
+    const a = await getLiveEvents({ city: 'Smallville' });
+    assert.equal(a.fallback, true);
+    assert.deepEqual(a.events.map((e) => e.name), ['Stand-up Night', 'Improv Jam']);
+    assert.ok(a.events.every((e) => e.kind === 'comedy'));
+
+    // Case 2: podcast shows exist -> no fallback, comedy never searched
+    calls.length = 0;
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url));
+      const events = String(url).includes('keyword=podcast') ? [tmEvent('p1', 'Big Podcast Live')] : [];
+      return new Response(JSON.stringify(events.length ? { _embedded: { events } } : {}), { status: 200 });
+    }) as typeof fetch;
+    const b = await getLiveEvents({ city: 'Bigtown' });
+    assert.equal(b.fallback, false);
+    assert.equal(b.events[0].kind, 'podcast');
+    assert.ok(!calls.some((c) => c.includes('classificationName')));
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.TICKETMASTER_API_KEY;
+  }
 });
