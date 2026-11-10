@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { MoodSettings, MediaType, SavedMediaItem } from '../types';
-import { saveMediaItem } from '../lib/mediaService';
+import { CatalogDisplayMetadata, MoodSettings, MediaType, SavedMediaItem } from '../types';
+import { getUserRatingFeedback, saveMediaItem } from '../lib/mediaService';
 import { Sparkles, Sliders, Film, Tv, BookOpen, Radio, Bookmark, Check, Info, Clock, AlertCircle } from 'lucide-react';
 
-interface RecommendationCardItem {
+interface RecommendationCardItem extends CatalogDisplayMetadata {
   id: string;
   catalogId: string;
   title: string;
@@ -17,7 +17,24 @@ interface RecommendationCardItem {
   overview: string;
   streamingProviders?: string[];
   compatibilityScore: number;
+  source?: SavedMediaItem['source'];
   aiExplanation: string;
+}
+
+function durationLabel(item: RecommendationCardItem) {
+  if (item.pageCount) return `${item.pageCount} pages`;
+  if (!item.runtimeMinutes) return '';
+  const unit = item.mediaType === 'tv' || item.mediaType === 'podcast' ? ' per episode' : '';
+  return `${item.runtimeMinutes} min${unit}`;
+}
+
+function TitleArtwork({ item, className = '' }: { item: RecommendationCardItem; className?: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!item.posterUrl || failed) {
+    return <div className="grid h-full place-items-center text-sm text-[#F7F2E9]/60">No artwork available</div>;
+  }
+  return <img src={item.posterUrl} alt={item.title} loading="lazy" onError={() => setFailed(true)}
+    className={`w-full h-full object-cover ${className}`} />;
 }
 
 export const DiscoverPage: React.FC = () => {
@@ -71,14 +88,17 @@ export const DiscoverPage: React.FC = () => {
   const handleFindPlotTwist = async () => {
     setLoading(true);
     setStatusMessage(null);
+    setRecommendations([]);
 
     try {
+      const ratingFeedback = user ? await getUserRatingFeedback(user.uid) : undefined;
       const response = await fetch('/api/recommendations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           moodSettings: mood,
           tasteProfile: userProfile?.tasteProfile,
+          ratingFeedback,
           formats: selectedFormats,
           maxDurationMinutes: durationLimit > 0 ? durationLimit : undefined,
           streamingServices: selectedStreamers.length > 0 ? selectedStreamers : undefined,
@@ -90,7 +110,9 @@ export const DiscoverPage: React.FC = () => {
       }
 
       const data = await response.json();
-      setRecommendations(data.results || []);
+      const results = data.results || [];
+      setRecommendations(results);
+      if (results.length === 0) setStatusMessage('No titles match these filters. Try expanding your search.');
     } catch (err) {
       console.error('Failed to get recommendations:', err);
       setStatusMessage('Failed to fetch recommendations. Please try again.');
@@ -115,7 +137,7 @@ export const DiscoverPage: React.FC = () => {
         releaseYear: item.releaseYear,
         genres: item.genres,
         status: 'watchlist',
-        source: item.mediaType === 'book' ? 'google_books' : item.mediaType === 'podcast' ? 'podcast' : 'tmdb',
+        source: item.source ?? (item.mediaType === 'book' ? 'google_books' : item.mediaType === 'podcast' ? 'podcast' : 'tmdb'),
         runtimeMinutes: item.runtimeMinutes,
         streamingProviders: item.streamingProviders,
         overview: item.overview,
@@ -305,6 +327,7 @@ export const DiscoverPage: React.FC = () => {
                 <button
                   key={d.limit}
                   onClick={() => setDurationLimit(d.limit)}
+                  aria-pressed={durationLimit === d.limit}
                   className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
                     durationLimit === d.limit
                       ? 'bg-[#10283F] border-[#D9B66F] text-[#D9B66F]'
@@ -318,19 +341,24 @@ export const DiscoverPage: React.FC = () => {
           </div>
         </div>
 
+        <p className="text-xs text-[#F7F2E9]/60">
+          Reading time uses about 2 pages per minute. TV and podcast durations are per episode.
+        </p>
+
         {/* Streaming Service Filter */}
         <div className="pt-2">
           <span className="text-xs font-semibold uppercase tracking-wider text-[#D9B66F] block mb-2">
-            Streaming Providers (Optional)
+            U.S. Movie & TV Streaming Providers (Optional)
           </span>
           <div className="flex flex-wrap gap-2">
-            {['Netflix', 'Amazon Prime Video', 'Max', 'Hulu', 'Apple TV+', 'Disney+', 'Paramount+', 'Spotify'].map(
+            {['Netflix', 'Amazon Prime Video', 'HBO Max', 'Hulu', 'Apple TV+', 'Disney+', 'Paramount+'].map(
               (svc) => {
                 const active = selectedStreamers.includes(svc);
                 return (
                   <button
                     key={svc}
                     onClick={() => toggleStreamer(svc)}
+                    aria-pressed={active}
                     className={`px-3 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
                       active
                         ? 'bg-[#10283F] border-[#D9B66F] text-[#D9B66F]'
@@ -353,7 +381,7 @@ export const DiscoverPage: React.FC = () => {
             className="px-10 py-4 bg-[#D9B66F] hover:bg-[#D9B66F]/90 text-[#091A2B] font-bold text-sm uppercase tracking-wider rounded-xl shadow-xl transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
           >
             <Sparkles className="w-5 h-5" />
-            <span>{loading ? 'Consulting Gemini AI...' : 'Find My Plot Twist'}</span>
+            <span>{loading ? 'Finding matches…' : 'Find My Plot Twist'}</span>
           </button>
         </div>
       </div>
@@ -374,7 +402,7 @@ export const DiscoverPage: React.FC = () => {
               Curated For Your Current Mood
             </h2>
             <span className="text-xs text-[#F7F2E9]/60 font-mono">
-              {recommendations.length} Verified Titles
+              {recommendations.length} Matches
             </span>
           </div>
 
@@ -388,11 +416,7 @@ export const DiscoverPage: React.FC = () => {
                 >
                   {/* Poster / Artwork Header */}
                   <div className="relative h-64 w-full bg-[#091A2B] overflow-hidden">
-                    <img
-                      src={item.posterUrl}
-                      alt={item.title}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                    />
+                    <TitleArtwork item={item} className="group-hover:scale-105 transition-transform duration-300" />
                     <div className="absolute inset-0 bg-gradient-to-t from-[#091A2B] via-transparent to-transparent" />
                     <div className="absolute top-3 left-3 bg-[#091A2B]/80 backdrop-blur-md px-2.5 py-1 rounded-md text-[11px] font-semibold text-[#D9B66F] border border-[#10283F]">
                       {item.compatibilityScore}% Plot Twist Match
@@ -416,15 +440,8 @@ export const DiscoverPage: React.FC = () => {
 
                       {/* Clean Unboxed Metadata */}
                       <div className="flex items-center gap-1.5 text-xs text-[#F7F2E9]/60">
-                        <span>{item.creator}</span>
-                        <span aria-hidden="true">·</span>
-                        <span>{item.genres.slice(0, 2).join(', ')}</span>
-                        {item.runtimeMinutes && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span>{item.runtimeMinutes}m</span>
-                          </>
-                        )}
+                        {[item.creator, item.genres.slice(0, 2).join(', '), durationLabel(item)].filter(Boolean)
+                          .join(' · ')}
                       </div>
 
                       <p className="text-xs text-[#F7F2E9]/70 line-clamp-2 leading-relaxed pt-1">
@@ -472,6 +489,20 @@ export const DiscoverPage: React.FC = () => {
         </div>
       )}
 
+      <div className="flex flex-wrap items-center gap-3 border-t border-[#10283F] pt-4 text-xs text-[#F7F2E9]/65">
+        <a href="https://www.themoviedb.org/" target="_blank" rel="noreferrer">
+          <img
+            src="https://www.themoviedb.org/assets/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg"
+            alt="The Movie Database (TMDB)" className="w-20" loading="lazy"
+          />
+        </a>
+        <div>
+          <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+          <p>Streaming availability from <a className="underline" href="https://www.justwatch.com/us"
+            target="_blank" rel="noreferrer">JustWatch</a> via TMDB. Book data from Google Books.</p>
+        </div>
+      </div>
+
       {/* Details Modal */}
       {selectedDetail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
@@ -484,7 +515,9 @@ export const DiscoverPage: React.FC = () => {
                 <h3 className="text-2xl font-serif font-bold text-[#F7F2E9]">
                   {selectedDetail.title}
                 </h3>
-                <span className="text-xs text-[#F7F2E9]/60">Created by {selectedDetail.creator}</span>
+                <p className="text-xs text-[#F7F2E9]/60">
+                  {[selectedDetail.creator, durationLabel(selectedDetail)].filter(Boolean).join(' · ')}
+                </p>
               </div>
               <button
                 onClick={() => setSelectedDetail(null)}
@@ -495,11 +528,7 @@ export const DiscoverPage: React.FC = () => {
             </div>
 
             <div className="rounded-xl overflow-hidden h-48 bg-[#10283F]">
-              <img
-                src={selectedDetail.posterUrl}
-                alt={selectedDetail.title}
-                className="w-full h-full object-cover"
-              />
+              <TitleArtwork key={selectedDetail.id} item={selectedDetail} />
             </div>
 
             <div className="space-y-3">
@@ -510,7 +539,8 @@ export const DiscoverPage: React.FC = () => {
             {selectedDetail.streamingProviders && selectedDetail.streamingProviders.length > 0 && (
               <div className="space-y-2">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-[#D9B66F]">
-                  Available On
+                  {selectedDetail.catalogOrigin === 'fallback' ? 'Previously listed providers'
+                    : selectedDetail.source === 'tmdb' ? 'U.S. streaming availability' : 'Available on'}
                 </h4>
                 <div className="flex flex-wrap gap-2">
                   {selectedDetail.streamingProviders.map((prov) => (
@@ -523,6 +553,16 @@ export const DiscoverPage: React.FC = () => {
                   ))}
                 </div>
               </div>
+            )}
+
+            {selectedDetail.catalogOrigin === 'fallback' && (
+              <p className="text-xs text-[#F7F2E9]/60">Saved catalog entry. Check the provider for current availability.</p>
+            )}
+            {selectedDetail.providerUrl && (
+              <a href={selectedDetail.providerUrl} target="_blank" rel="noreferrer"
+                className="text-sm text-[#D9B66F] underline">
+                See U.S. streaming options · data by JustWatch
+              </a>
             )}
 
             <div className="pt-4 border-t border-[#10283F] flex justify-end">

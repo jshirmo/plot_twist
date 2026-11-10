@@ -31,6 +31,13 @@ export interface LocalEvent {
   category?: string;
   priceRange?: string;
   matchedPodcast?: string; // set when the event matches a podcast in the user's library
+  kind: 'podcast' | 'comedy'; // 'comedy' = shown because no podcast shows were found nearby
+}
+
+export interface LiveEventsResult {
+  events: LocalEvent[];
+  // true when no live podcast shows were found, so these are nearby comedy shows instead
+  fallback: boolean;
 }
 
 export interface Bookstore {
@@ -150,6 +157,7 @@ export function mapTicketmasterEvent(ev: RawTmEvent, from?: { lat: number; lng: 
   const genre = cls?.genre?.name && cls.genre.name !== 'Undefined' ? cls.genre.name : undefined;
   return {
     id: ev.id,
+    kind: 'podcast',
     name: ev.name,
     url: ev.url,
     date: ev.dates?.start?.localDate || '',
@@ -167,13 +175,19 @@ export function mapTicketmasterEvent(ev: RawTmEvent, from?: { lat: number; lng: 
   };
 }
 
-async function ticketmasterSearch(keyword: string, loc: LocationQuery, size: number): Promise<RawTmEvent[]> {
+async function ticketmasterSearch(
+  keyword: string,
+  loc: LocationQuery,
+  size: number,
+  classificationName?: string
+): Promise<RawTmEvent[]> {
   const params = new URLSearchParams({
     apikey: process.env.TICKETMASTER_API_KEY as string,
-    keyword,
     size: String(size),
     sort: 'date,asc',
   });
+  if (keyword) params.set('keyword', keyword);
+  if (classificationName) params.set('classificationName', classificationName);
   if (hasCoords(loc)) {
     params.set('geoPoint', encodeGeohash(loc.lat, loc.lng, 7));
     params.set('radius', '75');
@@ -182,7 +196,7 @@ async function ticketmasterSearch(keyword: string, loc: LocationQuery, size: num
     params.set('city', loc.city);
   }
 
-  const key = `tm:${keyword}:${params.get('geoPoint') || params.get('city')}:${size}`;
+  const key = `tm:${keyword}:${classificationName || ''}:${params.get('geoPoint') || params.get('city')}:${size}`;
   return cached(key, async () => {
     const res = await fetch(`${TICKETMASTER_BASE}?${params.toString()}`, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -197,8 +211,9 @@ async function ticketmasterSearch(keyword: string, loc: LocationQuery, size: num
 /**
  * Live podcast shows near a location. Searches "podcast" plus up to 5 podcast titles
  * from the user's library, so a live taping of a show they listen to rises to the top.
+ * If nothing comes back, returns nearby comedy shows with fallback: true.
  */
-export async function getLiveEvents(loc: LocationQuery, libraryPodcasts: string[] = []): Promise<LocalEvent[]> {
+export async function getLiveEvents(loc: LocationQuery, libraryPodcasts: string[] = []): Promise<LiveEventsResult> {
   if (!process.env.TICKETMASTER_API_KEY) throw new Error('not_configured');
   if (!hasCoords(loc) && !loc.city) throw new Error('location_required');
 
@@ -228,10 +243,27 @@ export async function getLiveEvents(loc: LocationQuery, libraryPodcasts: string[
     if (!results.has(ev.id)) results.set(ev.id, mapTicketmasterEvent(ev, from));
   }
 
-  return [...results.values()].sort((a, b) => {
-    if (Boolean(a.matchedPodcast) !== Boolean(b.matchedPodcast)) return a.matchedPodcast ? -1 : 1;
-    return a.date.localeCompare(b.date);
-  });
+  if (results.size > 0) {
+    const events = [...results.values()].sort((a, b) => {
+      if (Boolean(a.matchedPodcast) !== Boolean(b.matchedPodcast)) return a.matchedPodcast ? -1 : 1;
+      return a.date.localeCompare(b.date);
+    });
+    return { events, fallback: false };
+  }
+
+  // No live podcast shows nearby (common in smaller cities), so show nearby comedy instead.
+  // Comedy is the closest match: many touring podcasts are booked as comedy shows.
+  const comedy = await ticketmasterSearch('', loc, 20, 'Comedy');
+  const seen = new Set<string>();
+  const events: LocalEvent[] = [];
+  for (const ev of comedy) {
+    // Ticketmaster lists each night of a run separately; keep one per show name.
+    const name = ev.name.trim().toLowerCase();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    events.push({ ...mapTicketmasterEvent(ev, from), kind: 'comedy' });
+  }
+  return { events: events.slice(0, 12), fallback: true };
 }
 
 // ---------- Google Places: bookstores ----------
