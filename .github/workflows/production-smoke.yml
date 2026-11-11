@@ -1,0 +1,23 @@
+name: Production API smoke
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - chore/production-smoke
+
+permissions:
+  contents: read
+
+jobs:
+  api-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check production catalogs and local services
+        env:
+          PLOT_TWIST_BASE_URL: https://plot-twist-app.onrender.com
+        run: node scripts/production-smoke.mjs

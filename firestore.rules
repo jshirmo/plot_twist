@@ -104,13 +104,36 @@ service cloud.firestore {
         incoming().keys().hasAll(['name', 'ownerId', 'inviteCode', 'memberIds']) &&
         incoming().name is string && incoming().name.size() <= 128 &&
         incoming().inviteCode is string && incoming().inviteCode.size() <= 32;
+      // Owners can edit their own groups, but may not transfer ownership.
+      // Non-owners may only add or remove THEMSELVES from memberIds,
+      // changing no fields other than memberIds and updatedAt.
+      // No reading is needed for a join: knowledge of the invite code
+      // permits exactly a one-member addition to a grp_<CODE> document.
       allow update: if isSignedIn() &&
         isValidId(groupId) &&
         incoming().ownerId == existing().ownerId &&
         (
           existing().ownerId == request.auth.uid ||
-          request.auth.uid in existing().memberIds ||
-          request.auth.uid in incoming().memberIds
+          (
+            existing().memberIds is list &&
+            incoming().memberIds is list &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberIds', 'updatedAt']) &&
+            (
+              (
+                groupId == 'grp_' + existing().inviteCode &&
+                !(request.auth.uid in existing().memberIds) &&
+                request.auth.uid in incoming().memberIds &&
+                incoming().memberIds.size() == existing().memberIds.size() + 1 &&
+                incoming().memberIds.hasAll(existing().memberIds)
+              ) ||
+              (
+                request.auth.uid in existing().memberIds &&
+                !(request.auth.uid in incoming().memberIds) &&
+                incoming().memberIds.size() == existing().memberIds.size() - 1 &&
+                existing().memberIds.hasAll(incoming().memberIds)
+              )
+            )
+          )
         );
       allow delete: if isSignedIn() &&
         isValidId(groupId) &&
