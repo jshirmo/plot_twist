@@ -1,5 +1,7 @@
 # Plot Twist — AI-Powered Cross-Media Entertainment Discovery
 
+**Live website:** [Open Plot Twist](https://plot-twist-app.onrender.com)
+
 **Plot Twist** is an AI-powered entertainment discovery platform that helps you decide what to read, watch, or listen to next across **Books, Movies, Television Shows, and Podcasts**.
 
 Instead of isolating media formats, Plot Twist connects stories through mood and narrative elements. For example, if you love a twist-heavy, claustrophobic mystery like *Knives Out*, Plot Twist can recommend an acclaimed thriller novel, a binge-worthy drama series, or an investigative podcast that evokes the same feeling.
