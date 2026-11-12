@@ -8,7 +8,7 @@ import {
   searchPodcasts,
 } from './podcastService';
 import { mapApplePodcast, mapTopPodcast, mapAppleEpisode, biggerArtwork } from './applePodcasts';
-import { distanceMiles, mapTicketmasterEvent, mapPlace, hasCoords, encodeGeohash } from './localService';
+import { distanceMiles, mapTicketmasterEvent, mapPlace, hasCoords, encodeGeohash, collapseRuns } from './localService';
 
 test('maps a Podcast Index feed into the catalog shape', () => {
   const item = mapFeedToCatalogItem({
@@ -141,6 +141,7 @@ test('live events: podcast shows first, comedy only as a fallback', async () => 
     const a = await getLiveEvents({ city: 'Smallville' });
     assert.equal(a.fallback, true);
     assert.deepEqual(a.events.map((e) => e.name), ['Stand-up Night', 'Improv Jam']);
+    assert.equal(a.events[0].moreDates, 1);
     assert.ok(a.events.every((e) => e.kind === 'comedy'));
 
     // Case 2: podcast shows exist -> no fallback, comedy never searched
@@ -158,4 +159,15 @@ test('live events: podcast shows first, comedy only as a fallback', async () => 
     globalThis.fetch = realFetch;
     delete process.env.TICKETMASTER_API_KEY;
   }
+});
+
+test('collapses multi-night runs of the same show into one card', () => {
+  const ev = (id: string, name: string, date: string) => ({ id, name, url: 'u', date, kind: 'podcast' as const });
+  const out = collapseRuns([
+    ev('1', 'Giggly Squad: The Gehls Gehl Tour', '2027-02-18'),
+    ev('2', 'Giggly Squad:  The Gehls Gehl Tour', '2027-02-19'),
+    ev('3', 'Other Show', '2027-02-19'),
+    ev('4', 'giggly squad: the gehls gehl tour', '2027-02-20'),
+  ]);
+  assert.deepEqual(out.map((e) => [e.id, e.moreDates ?? 0]), [['1', 2], ['3', 0]]);
 });

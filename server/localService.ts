@@ -32,6 +32,7 @@ export interface LocalEvent {
   priceRange?: string;
   matchedPodcast?: string; // set when the event matches a podcast in the user's library
   kind: 'podcast' | 'comedy'; // 'comedy' = shown because no podcast shows were found nearby
+  moreDates?: number; // other nights of the same show that were collapsed into this card
 }
 
 export interface LiveEventsResult {
@@ -98,6 +99,19 @@ export function distanceMiles(aLat: number, aLng: number, bLat: number, bLng: nu
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Ticketmaster lists each night of a run as its own event. Keep the first card per show
+// (input should already be in the order to keep) and count the other nights in moreDates.
+export function collapseRuns(events: LocalEvent[]): LocalEvent[] {
+  const byName = new Map<string, LocalEvent>();
+  for (const ev of events) {
+    const key = ev.name.trim().toLowerCase().replace(/\s+/g, ' ');
+    const first = byName.get(key);
+    if (first) first.moreDates = (first.moreDates || 0) + 1;
+    else byName.set(key, { ...ev });
+  }
+  return [...byName.values()];
+}
 
 // Ticketmaster deprecated "latlong" in favor of "geoPoint", which takes a geohash.
 const GEOHASH_CHARS = '0123456789bcdefghjkmnpqrstuvwxyz';
@@ -244,25 +258,17 @@ export async function getLiveEvents(loc: LocationQuery, libraryPodcasts: string[
   }
 
   if (results.size > 0) {
-    const events = [...results.values()].sort((a, b) => {
+    const sorted = [...results.values()].sort((a, b) => {
       if (Boolean(a.matchedPodcast) !== Boolean(b.matchedPodcast)) return a.matchedPodcast ? -1 : 1;
       return a.date.localeCompare(b.date);
     });
-    return { events, fallback: false };
+    return { events: collapseRuns(sorted), fallback: false };
   }
 
   // No live podcast shows nearby (common in smaller cities), so show nearby comedy instead.
   // Comedy is the closest match: many touring podcasts are booked as comedy shows.
   const comedy = await ticketmasterSearch('', loc, 20, 'Comedy');
-  const seen = new Set<string>();
-  const events: LocalEvent[] = [];
-  for (const ev of comedy) {
-    // Ticketmaster lists each night of a run separately; keep one per show name.
-    const name = ev.name.trim().toLowerCase();
-    if (seen.has(name)) continue;
-    seen.add(name);
-    events.push({ ...mapTicketmasterEvent(ev, from), kind: 'comedy' });
-  }
+  const events = collapseRuns(comedy.map((ev) => ({ ...mapTicketmasterEvent(ev, from), kind: 'comedy' as const })));
   return { events: events.slice(0, 12), fallback: true };
 }
 
