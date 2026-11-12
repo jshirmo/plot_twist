@@ -1,6 +1,8 @@
 # Plot Twist — AI-Powered Cross-Media Entertainment Discovery
 
-**Live website:** [Open Plot Twist](https://plot-twist-app.onrender.com)
+**Custom domain:** [plottwistapp.site](https://plottwistapp.site)
+
+**Render URL:** [plot-twist-app.onrender.com](https://plot-twist-app.onrender.com)
 
 **Plot Twist** is an AI-powered entertainment discovery platform that helps you decide what to read, watch, or listen to next across **Books, Movies, Television Shows, and Podcasts**.
 
