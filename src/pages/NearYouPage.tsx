@@ -32,6 +32,7 @@ interface LocalEvent {
   priceRange?: string;
   matchedPodcast?: string;
   kind?: 'podcast' | 'comedy';
+  moreDates?: number;
 }
 
 interface Bookstore {
@@ -283,7 +284,10 @@ export const NearYouPage: React.FC = () => {
                       </span>
                     )}
                     <h3 className="font-serif font-bold text-[#F7F2E9] leading-snug">{ev.name}</h3>
-                    <p className="text-xs text-[#F7F2E9]/70">{formatEventDate(ev.date, ev.time)}</p>
+                    <p className="text-xs text-[#F7F2E9]/70">
+                      {formatEventDate(ev.date, ev.time)}
+                      {ev.moreDates ? ` · +${ev.moreDates} more ${ev.moreDates === 1 ? 'date' : 'dates'}` : ''}
+                    </p>
                     <p className="text-xs text-[#F7F2E9]/50">
                       {[ev.venueName, [ev.venueCity, ev.venueState].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}
                       {ev.distanceMiles !== undefined && ` · ${ev.distanceMiles} mi`}
