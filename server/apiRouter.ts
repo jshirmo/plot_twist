@@ -4,6 +4,7 @@ import { parseRatingFeedback } from './ratingFeedback';
 import { loadCatalog, VERIFIED_CATALOG } from './mediaCatalog';
 import { searchPodcasts, getTrendingPodcasts, getPodcastEpisodes, podcastSource } from './podcastService';
 import { getLiveEvents, getNearbyBookstores, localServiceStatus, type LocationQuery } from './localService';
+import type { MediaType, MoodSettings, TasteProfile } from '../src/types';
 
 export const apiRouter = Router();
 
@@ -33,28 +34,165 @@ apiRouter.post('/recommendations', async (req: Request, res: Response) => {
   }
 });
 
-// Endpoint for Movie Swipe Deck
+const swipeFormats: MediaType[] = ['movie', 'tv', 'book', 'podcast'];
+
+interface ScanRecognition {
+  title?: string;
+  creator?: string;
+  mediaType?: MediaType;
+  genres?: string[];
+  summary?: string;
+  confidence?: number;
+}
+
+interface SwipeFeedback {
+  mediaId: string;
+  mediaType: MediaType;
+  decision: 'interested' | 'pass';
+  feedbackStatus: 'active' | 'reversed';
+  genres: string[];
+  moodTags?: MoodSettings;
+}
+
+function isMediaType(value: unknown): value is MediaType {
+  return typeof value === 'string' && swipeFormats.includes(value as MediaType);
+}
+
+function readMoodTags(value: unknown): MoodSettings | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Record<string, unknown>;
+  const read = (key: keyof MoodSettings) => {
+    const score = candidate[key];
+    return typeof score === 'number' && Number.isFinite(score)
+      ? Math.max(1, Math.min(5, score))
+      : undefined;
+  };
+  const darkness = read('darkness');
+  const romance = read('romance');
+  const suspense = read('suspense');
+  const plotTwists = read('plotTwists');
+  const emotionalIntensity = read('emotionalIntensity');
+  return darkness === undefined || romance === undefined || suspense === undefined ||
+    plotTwists === undefined || emotionalIntensity === undefined
+    ? undefined
+    : { darkness, romance, suspense, plotTwists, emotionalIntensity };
+}
+
+function readSwipeFeedback(value: unknown): SwipeFeedback[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): SwipeFeedback[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const candidate = entry as Record<string, unknown>;
+    if (!isMediaType(candidate.mediaType) ||
+      typeof candidate.mediaId !== 'string' ||
+      (candidate.decision !== 'interested' && candidate.decision !== 'pass') ||
+      candidate.feedbackStatus !== 'active') return [];
+
+    return [{
+      mediaId: candidate.mediaId,
+      mediaType: candidate.mediaType,
+      decision: candidate.decision,
+      feedbackStatus: 'active',
+      genres: Array.isArray(candidate.genres)
+        ? candidate.genres.filter((genre): genre is string => typeof genre === 'string')
+        : [],
+      moodTags: readMoodTags(candidate.moodTags),
+    }];
+  });
+}
+
+function sharedGenreCount(a: string[], b: string[]) {
+  const left = new Set(a.map((genre) => genre.trim().toLowerCase()).filter(Boolean));
+  const right = new Set(b.map((genre) => genre.trim().toLowerCase()).filter(Boolean));
+  return [...left].filter((genre) => right.has(genre)).length;
+}
+
+function moodSimilarity(a: MoodSettings, b?: MoodSettings) {
+  if (!b) return 0;
+  const keys: Array<keyof MoodSettings> = ['darkness', 'romance', 'suspense', 'plotTwists', 'emotionalIntensity'];
+  const distance = keys.reduce((sum, key) => sum + Math.abs(a[key] - b[key]), 0);
+  return Math.max(0, 5 - distance / keys.length);
+}
+
+export function rankSwipeDeck(
+  candidates: Awaited<ReturnType<typeof loadCatalog>>,
+  feedback: SwipeFeedback[],
+  tasteProfile?: TasteProfile,
+) {
+  return candidates.map((candidate) => {
+    const preferredGenreBoost = sharedGenreCount(candidate.genres, tasteProfile?.preferredGenres ?? []) * 3;
+    const feedbackAdjustment = feedback.reduce((total, swipe) => {
+      const similarity = sharedGenreCount(candidate.genres, swipe.genres) * 6
+        + moodSimilarity(candidate.moodTags, swipe.moodTags) * 2;
+      return total + (swipe.decision === 'interested' ? similarity : -similarity);
+    }, 0);
+    const score = Math.max(60, Math.min(99, Math.round(80 + preferredGenreBoost + feedbackAdjustment)));
+    const matchingSwipe = feedback.find((swipe) => sharedGenreCount(candidate.genres, swipe.genres) > 0);
+    const feedbackReason = matchingSwipe
+      ? matchingSwipe.decision === 'interested'
+        ? `Your interest in similar ${matchingSwipe.genres[0] || 'stories'} moves this up.`
+        : `Kept lower because it is similar to a ${matchingSwipe.genres[0] || 'style'} you passed.`
+      : `Recommended for its ${candidate.genres.slice(0, 2).join(' and ') || 'storytelling'}.`;
+
+    return {
+      id: candidate.id,
+      mediaType: candidate.mediaType,
+      title: candidate.title,
+      releaseYear: candidate.releaseYear,
+      posterUrl: candidate.posterUrl,
+      genres: candidate.genres,
+      pageCount: candidate.pageCount,
+      runtimeMinutes: candidate.runtimeMinutes,
+      overview: candidate.overview,
+      aiExplanation: feedbackReason,
+      compatibilityScore: score,
+      streamingProviders: candidate.streamingProviders,
+      director: candidate.creator,
+      moodTags: candidate.moodTags,
+    };
+  }).sort((a, b) => b.compatibilityScore - a.compatibilityScore);
+}
+
+function asPercent(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(100, Math.round(value)))
+    : 0;
+}
+
+function compactText(value: unknown, maximum = 180) {
+  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, maximum) : '';
+}
+
+export function describeScanMatch(recognition: ScanRecognition, tasteProfile?: TasteProfile) {
+  const summary = compactText(recognition.summary);
+  const recognizedGenres = recognition.genres ?? [];
+  const matchingGenres = recognizedGenres.filter((genre) => tasteProfile?.preferredGenres?.some(
+    (preferred) => preferred.toLowerCase() === genre.toLowerCase(),
+  ));
+  if (matchingGenres.length) {
+    return `It shares your interest in ${matchingGenres.slice(0, 2).join(' and ')}. ${summary}`.trim();
+  }
+  return summary || `Recognized from the cover artwork and title details.`;
+}
+
+// Endpoint for the four-format swipe deck
 apiRouter.post('/swipe-deck', async (req: Request, res: Response) => {
   try {
-    const { excludedMediaIds, tasteProfile } = req.body;
-
-    const movieCandidates = VERIFIED_CATALOG.filter(
-      (m) => m.mediaType === 'movie' && (!excludedMediaIds || !excludedMediaIds.includes(m.id))
+    const mediaType = isMediaType(req.body.mediaType) ? req.body.mediaType : 'movie';
+    const excludedMediaIds = Array.isArray(req.body.excludedMediaIds)
+      ? req.body.excludedMediaIds.filter((id: unknown): id is string => typeof id === 'string')
+      : [];
+    const tasteProfile = req.body.tasteProfile as TasteProfile | undefined;
+    const feedback = readSwipeFeedback(req.body.swipeHistory);
+    const catalog = await loadCatalog({
+      formats: [mediaType],
+      preferredGenres: tasteProfile?.preferredGenres,
+    });
+    const deck = rankSwipeDeck(
+      catalog.filter((item) => !excludedMediaIds.includes(item.id)),
+      feedback,
+      tasteProfile,
     );
-
-    const deck = movieCandidates.map((m) => ({
-      id: m.id,
-      title: m.title,
-      releaseYear: m.releaseYear,
-      posterUrl: m.posterUrl,
-      genres: m.genres,
-      runtimeMinutes: m.runtimeMinutes,
-      overview: m.overview,
-      aiExplanation: `Recommended for you based on your interest in ${m.genres.slice(0, 2).join(' & ')}.`,
-      compatibilityScore: 88,
-      streamingProviders: m.streamingProviders,
-      director: m.creator,
-    }));
 
     return res.json({ deck });
   } catch (error) {
@@ -72,22 +210,34 @@ apiRouter.post('/scan', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'imageBase64 is required' });
     }
 
-    const recognition = await scanMediaPosterOrCover(imageBase64, mimeType || 'image/jpeg');
+    const scanned = await scanMediaPosterOrCover(imageBase64, mimeType || 'image/jpeg') as ScanRecognition;
+    const recognition: ScanRecognition = {
+      ...scanned,
+      mediaType: isMediaType(scanned.mediaType) ? scanned.mediaType : undefined,
+      genres: Array.isArray(scanned.genres)
+        ? scanned.genres.filter((genre): genre is string => typeof genre === 'string').slice(0, 10)
+        : [],
+      confidence: asPercent(scanned.confidence),
+    };
 
-    // Find any catalog match or format response
+    // A title can exist in more than one format, so preserve the detected format.
     const catalogMatch = VERIFIED_CATALOG.find(
-      (c) => c.title.toLowerCase() === recognition.title?.toLowerCase()
+      (c) => c.mediaType === recognition.mediaType && c.title.toLowerCase() === recognition.title?.toLowerCase()
     );
 
-    const compatibilityScore = catalogMatch ? 92 : 84;
-    const explanation = catalogMatch
-      ? `Recognized '${catalogMatch.title}'. This fits your profile with its notable plot twists and depth.`
-      : `Recognized '${recognition.title || 'Media Title'}'. High compatibility with your preferred genres.`;
+    const matchPercent = asPercent(recognition.confidence);
+    const matchingGenres = (recognition.genres ?? []).filter((genre) =>
+      tasteProfile?.preferredGenres?.some((preferred: string) => preferred.toLowerCase() === genre.toLowerCase()),
+    ).length;
+    const compatibilityScore = Math.max(50, Math.min(99, 70 + matchingGenres * 10));
+    const explanation = describeScanMatch(recognition, tasteProfile);
 
     return res.json({
       recognized: recognition,
       catalogMatch: catalogMatch || null,
+      matchPercent,
       compatibilityScore,
+      why: explanation,
       aiExplanation: explanation,
     });
   } catch (error) {
