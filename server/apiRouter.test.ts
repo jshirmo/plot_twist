@@ -28,6 +28,16 @@ test('swipe feedback promotes and demotes similar titles without crossing format
   assert.equal(ranked.every((item) => item.mediaType === 'movie'), true);
 });
 
+test('a deck seed creates a stable, non-catalog-order tie break', () => {
+  const candidates = VERIFIED_CATALOG.filter((item) => item.mediaType === 'movie');
+  const first = rankSwipeDeck(candidates, [], undefined, 12345).map((item) => item.id);
+  const repeat = rankSwipeDeck(candidates, [], undefined, 12345).map((item) => item.id);
+  const catalogOrder = candidates.map((item) => item.id);
+
+  assert.deepEqual(repeat, first);
+  assert.notDeepEqual(first, catalogOrder);
+});
+
 test('scan explanation is short and ties a recognized title to a preferred genre', () => {
   const why = describeScanMatch({
     title: 'Example',

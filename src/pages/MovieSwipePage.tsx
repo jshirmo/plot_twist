@@ -11,9 +11,28 @@ const formatOptions: Array<{ value: MediaType; label: string; libraryLabel: stri
   { value: 'book', label: 'Books', libraryLabel: 'Books to Read' },
   { value: 'podcast', label: 'Podcasts', libraryLabel: 'Podcasts to Listen' },
 ];
+const anonymousHistoryKey = 'plot-twist:anonymous-swipe-history:v1';
+const deckSeedsKey = 'plot-twist:swipe-deck-seeds:v1';
 
 function activeSwipes(records: SwipeDecisionRecord[]) {
   return records.filter((record) => record.feedbackStatus === 'active');
+}
+
+function readSessionValue<T>(key: string, fallback: T): T {
+  try {
+    const value = window.sessionStorage.getItem(key);
+    return value ? JSON.parse(value) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeSessionValue(key: string, value: unknown) {
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // The swipe deck remains usable when browser storage is unavailable.
+  }
 }
 
 export const MovieSwipePage: React.FC = () => {
@@ -24,7 +43,8 @@ export const MovieSwipePage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [savingDecision, setSavingDecision] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
-  const sessionHistoryRef = useRef<SwipeDecisionRecord[]>([]);
+  const sessionHistoryRef = useRef<SwipeDecisionRecord[]>(readSessionValue(anonymousHistoryKey, []));
+  const deckSeedsRef = useRef<Partial<Record<MediaType, number>>>(readSessionValue(deckSeedsKey, {}));
 
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-200, 200], [-18, 18]);
@@ -36,6 +56,18 @@ export const MovieSwipePage: React.FC = () => {
   const nextMedia = deck[1];
   const undoAvailable = activeSwipes(swipeHistory).length > 0;
 
+  const deckSeedFor = useCallback((format: MediaType) => {
+    const savedSeed = deckSeedsRef.current[format];
+    if (typeof savedSeed === 'number' && Number.isFinite(savedSeed)) return savedSeed;
+
+    const bytes = new Uint32Array(1);
+    window.crypto?.getRandomValues?.(bytes);
+    const seed = bytes[0] || Math.floor(Math.random() * 2 ** 32);
+    deckSeedsRef.current = { ...deckSeedsRef.current, [format]: seed };
+    writeSessionValue(deckSeedsKey, deckSeedsRef.current);
+    return seed;
+  }, []);
+
   const requestDeck = useCallback(async (history: SwipeDecisionRecord[]) => {
     const activeHistory = activeSwipes(history);
     const res = await fetch('/api/swipe-deck', {
@@ -43,6 +75,7 @@ export const MovieSwipePage: React.FC = () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         mediaType,
+        deckSeed: deckSeedFor(mediaType),
         tasteProfile: userProfile?.tasteProfile,
         excludedMediaIds: activeHistory
           .filter((record) => record.mediaType === mediaType)
@@ -53,7 +86,7 @@ export const MovieSwipePage: React.FC = () => {
     if (!res.ok) throw new Error(`Swipe deck request failed (${res.status})`);
     const data = await res.json();
     return (data.deck ?? []) as MovieSwipeCard[];
-  }, [mediaType, userProfile?.tasteProfile]);
+  }, [deckSeedFor, mediaType, userProfile?.tasteProfile]);
 
   const loadDeck = useCallback(async () => {
     setLoading(true);
@@ -113,7 +146,10 @@ export const MovieSwipePage: React.FC = () => {
             createdAt: new Date().toISOString(),
           };
       const nextHistory = [record, ...swipeHistory.filter((item) => item.id !== record.id)];
-      if (!user) sessionHistoryRef.current = nextHistory;
+      if (!user) {
+        sessionHistoryRef.current = nextHistory;
+        writeSessionValue(anonymousHistoryKey, nextHistory);
+      }
       setSwipeHistory(nextHistory);
       setDeck((currentDeck) => currentDeck.slice(1));
       await refreshWithHistory(nextHistory);
@@ -147,7 +183,10 @@ export const MovieSwipePage: React.FC = () => {
       const nextHistory = swipeHistory.map((record) =>
         record.id === reversed!.id ? { ...record, feedbackStatus: 'reversed' as const } : record
       );
-      if (!user) sessionHistoryRef.current = nextHistory;
+      if (!user) {
+        sessionHistoryRef.current = nextHistory;
+        writeSessionValue(anonymousHistoryKey, nextHistory);
+      }
       setSwipeHistory(nextHistory);
       await refreshWithHistory(nextHistory);
       setStatusNotice(`Reversed last swipe on ${reversed.title}.`);

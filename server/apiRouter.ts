@@ -114,10 +114,19 @@ function moodSimilarity(a: MoodSettings, b?: MoodSettings) {
   return Math.max(0, 5 - distance / keys.length);
 }
 
+function seededTieBreaker(id: string, seed: number) {
+  let hash = (seed >>> 0) || 1;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = Math.imul(hash ^ id.charCodeAt(index), 0x45d9f3b) >>> 0;
+  }
+  return hash;
+}
+
 export function rankSwipeDeck(
   candidates: Awaited<ReturnType<typeof loadCatalog>>,
   feedback: SwipeFeedback[],
   tasteProfile?: TasteProfile,
+  deckSeed = 1,
 ) {
   return candidates.map((candidate) => {
     const preferredGenreBoost = sharedGenreCount(candidate.genres, tasteProfile?.preferredGenres ?? []) * 3;
@@ -150,7 +159,10 @@ export function rankSwipeDeck(
       director: candidate.creator,
       moodTags: candidate.moodTags,
     };
-  }).sort((a, b) => b.compatibilityScore - a.compatibilityScore);
+  }).sort((a, b) =>
+    b.compatibilityScore - a.compatibilityScore ||
+    seededTieBreaker(a.id, deckSeed) - seededTieBreaker(b.id, deckSeed)
+  );
 }
 
 function asPercent(value: unknown) {
@@ -184,6 +196,9 @@ apiRouter.post('/swipe-deck', async (req: Request, res: Response) => {
       : [];
     const tasteProfile = req.body.tasteProfile as TasteProfile | undefined;
     const feedback = readSwipeFeedback(req.body.swipeHistory);
+    const deckSeed = typeof req.body.deckSeed === 'number' && Number.isFinite(req.body.deckSeed)
+      ? req.body.deckSeed
+      : 1;
     const catalog = await loadCatalog({
       formats: [mediaType],
       preferredGenres: tasteProfile?.preferredGenres,
@@ -192,6 +207,7 @@ apiRouter.post('/swipe-deck', async (req: Request, res: Response) => {
       catalog.filter((item) => !excludedMediaIds.includes(item.id)),
       feedback,
       tasteProfile,
+      deckSeed,
     );
 
     return res.json({ deck });
