@@ -14,6 +14,20 @@ const formatOptions: Array<{ value: MediaType; label: string; libraryLabel: stri
 const anonymousHistoryKey = 'plot-twist:anonymous-swipe-history:v1';
 const deckSeedsKey = 'plot-twist:swipe-deck-seeds:v1';
 
+interface SwipeTasteSignals {
+  formatScores: Record<MediaType, number>;
+  genreScores: Record<string, number>;
+  topFormats: MediaType[];
+  topGenres: string[];
+  avoidedGenres: string[];
+  summary: string;
+}
+
+interface SwipeDeckResponse {
+  deck: MovieSwipeCard[];
+  tasteSignals?: SwipeTasteSignals;
+}
+
 function activeSwipes(records: SwipeDecisionRecord[]) {
   return records.filter((record) => record.feedbackStatus === 'active');
 }
@@ -40,6 +54,7 @@ export const MovieSwipePage: React.FC = () => {
   const [mediaType, setMediaType] = useState<MediaType>('movie');
   const [deck, setDeck] = useState<MovieSwipeCard[]>([]);
   const [swipeHistory, setSwipeHistory] = useState<SwipeDecisionRecord[]>([]);
+  const [tasteSignals, setTasteSignals] = useState<SwipeTasteSignals | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingDecision, setSavingDecision] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
@@ -84,8 +99,11 @@ export const MovieSwipePage: React.FC = () => {
       }),
     });
     if (!res.ok) throw new Error(`Swipe deck request failed (${res.status})`);
-    const data = await res.json();
-    return (data.deck ?? []) as MovieSwipeCard[];
+    const data = await res.json() as Partial<SwipeDeckResponse>;
+    return {
+      deck: Array.isArray(data.deck) ? data.deck : [],
+      tasteSignals: data.tasteSignals,
+    };
   }, [deckSeedFor, mediaType, userProfile?.tasteProfile]);
 
   const loadDeck = useCallback(async () => {
@@ -94,9 +112,10 @@ export const MovieSwipePage: React.FC = () => {
     try {
       let records = sessionHistoryRef.current;
       if (user) records = await getUserSwipeHistory(user.uid);
-      const newDeck = await requestDeck(records);
+      const response = await requestDeck(records);
       setSwipeHistory(records);
-      setDeck(newDeck);
+      setDeck(response.deck);
+      setTasteSignals(response.tasteSignals ?? null);
     } catch (error) {
       console.error('Failed to load swipe deck:', error);
       setSwipeHistory([]);
@@ -113,8 +132,9 @@ export const MovieSwipePage: React.FC = () => {
 
   const refreshWithHistory = useCallback(async (nextHistory: SwipeDecisionRecord[]) => {
     try {
-      const newDeck = await requestDeck(nextHistory);
-      setDeck(newDeck);
+      const response = await requestDeck(nextHistory);
+      setDeck(response.deck);
+      setTasteSignals(response.tasteSignals ?? null);
     } catch (error) {
       console.error('Failed to refresh swipe deck:', error);
       setStatusNotice('Your swipe was saved, but the next deck could not load. Refresh to continue.');
@@ -238,6 +258,13 @@ export const MovieSwipePage: React.FC = () => {
           </button>
         ))}
       </div>
+
+      {tasteSignals && activeSwipes(swipeHistory).length > 0 && (
+        <div className="mb-4 max-w-xl rounded-xl border border-[#D9B66F]/30 bg-[#10283F]/50 px-4 py-2 text-center text-xs text-[#F7F2E9]/75" aria-live="polite">
+          <span className="font-semibold text-[#D9B66F]">Learning from your swipes: </span>
+          {tasteSignals.summary}
+        </div>
+      )}
 
       {statusNotice && (
         <div className="mb-4 px-4 py-2 bg-[#10283F] border border-[#D9B66F]/50 rounded-lg text-xs text-[#D9B66F]" role="status">

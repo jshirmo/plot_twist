@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { describeScanMatch, rankSwipeDeck } from './apiRouter';
+import { createSwipeAwareTasteProfile, deriveSwipeTaste, describeScanMatch, rankSwipeDeck } from './apiRouter';
 import { VERIFIED_CATALOG } from './mediaCatalog';
 
 test('swipe feedback promotes and demotes similar titles without crossing formats', () => {
@@ -36,6 +36,35 @@ test('a deck seed creates a stable, non-catalog-order tie break', () => {
 
   assert.deepEqual(repeat, first);
   assert.notDeepEqual(first, catalogOrder);
+});
+
+test('repeated swipes build durable format and genre signals that can guide Gemini', () => {
+  const signals = deriveSwipeTaste([
+    {
+      mediaId: 'book_1', mediaType: 'book', decision: 'interested', feedbackStatus: 'active',
+      genres: ['Mystery', 'Thriller'], createdAt: '2026-11-14T10:00:00.000Z',
+    },
+    {
+      mediaId: 'book_2', mediaType: 'book', decision: 'interested', feedbackStatus: 'active',
+      genres: ['Mystery'], createdAt: '2026-11-15T10:00:00.000Z',
+    },
+    {
+      mediaId: 'movie_1', mediaType: 'movie', decision: 'pass', feedbackStatus: 'active',
+      genres: ['Romance'], createdAt: '2026-11-15T10:00:00.000Z',
+    },
+  ]);
+
+  assert.equal(signals.topFormats[0], 'book');
+  assert.ok(signals.formatScores.book > 0);
+  assert.ok(signals.formatScores.movie < 0);
+  assert.ok(signals.topGenres.includes('Mystery'));
+  assert.ok(signals.avoidedGenres.includes('Romance'));
+
+  const profile = createSwipeAwareTasteProfile(undefined, signals)!;
+  assert.deepEqual(profile.preferredFormats, ['book']);
+  assert.ok(profile.preferredGenres.includes('Mystery'));
+  assert.ok(profile.dislikedGenres.includes('Romance'));
+  assert.match(profile.aiTasteSummary ?? '', /swipes favor/i);
 });
 
 test('scan explanation is short and ties a recognized title to a preferred genre', () => {

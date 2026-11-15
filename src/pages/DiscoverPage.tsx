@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { CatalogDisplayMetadata, MoodSettings, MediaType, SavedMediaItem } from '../types';
-import { getUserRatingFeedback, saveMediaItem } from '../lib/mediaService';
+import { getUserRatingFeedback, getUserSwipeHistory, saveMediaItem } from '../lib/mediaService';
 import { Sparkles, Sliders, Film, Tv, BookOpen, Radio, Bookmark, Check, Info, Clock, AlertCircle } from 'lucide-react';
 
 interface RecommendationCardItem extends CatalogDisplayMetadata {
@@ -91,7 +91,9 @@ export const DiscoverPage: React.FC = () => {
     setRecommendations([]);
 
     try {
-      const ratingFeedback = user ? await getUserRatingFeedback(user.uid) : undefined;
+      const [ratingFeedback, swipeHistory] = user
+        ? await Promise.all([getUserRatingFeedback(user.uid), getUserSwipeHistory(user.uid)])
+        : [undefined, undefined];
       const response = await fetch('/api/recommendations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -99,6 +101,9 @@ export const DiscoverPage: React.FC = () => {
           moodSettings: mood,
           tasteProfile: userProfile?.tasteProfile,
           ratingFeedback,
+          // The server derives live format/genre signals from these persisted
+          // decisions before asking Gemini to rank verified catalog titles.
+          swipeHistory,
           formats: selectedFormats,
           maxDurationMinutes: durationLimit > 0 ? durationLimit : undefined,
           streamingServices: selectedStreamers.length > 0 ? selectedStreamers : undefined,

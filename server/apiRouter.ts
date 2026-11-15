@@ -17,10 +17,20 @@ apiRouter.post('/recommendations', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'moodSettings are required' });
     }
 
+    // Swipe history is the durable learning record. We derive its scores for each
+    // request instead of storing a second mutable aggregate, so Undo immediately
+    // removes its influence from both local and Gemini-powered recommendations.
+    const swipeFeedback = readSwipeFeedback(req.body.swipeHistory);
+    const swipeTaste = deriveSwipeTaste(swipeFeedback);
+    const effectiveTasteProfile = createSwipeAwareTasteProfile(tasteProfile, swipeTaste);
+    const inferredFormats = swipeTaste.topFormats.length ? swipeTaste.topFormats : undefined;
+
     const results = await generateRecommendations({
       moodSettings,
-      tasteProfile,
-      formats,
+      tasteProfile: effectiveTasteProfile,
+      // Explicit filters always win. Inferred formats make a first request dynamic
+      // when the caller has not supplied a format filter.
+      formats: Array.isArray(formats) && formats.length ? formats : inferredFormats,
       maxDurationMinutes,
       streamingServices,
       excludedMediaIds,
@@ -52,6 +62,16 @@ interface SwipeFeedback {
   feedbackStatus: 'active' | 'reversed';
   genres: string[];
   moodTags?: MoodSettings;
+  createdAt?: string;
+}
+
+export interface SwipeTasteSignals {
+  formatScores: Record<MediaType, number>;
+  genreScores: Record<string, number>;
+  topFormats: MediaType[];
+  topGenres: string[];
+  avoidedGenres: string[];
+  summary: string;
 }
 
 function isMediaType(value: unknown): value is MediaType {
@@ -80,7 +100,7 @@ function readMoodTags(value: unknown): MoodSettings | undefined {
 
 function readSwipeFeedback(value: unknown): SwipeFeedback[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((entry): SwipeFeedback[] => {
+  return value.slice(0, 100).flatMap((entry): SwipeFeedback[] => {
     if (!entry || typeof entry !== 'object') return [];
     const candidate = entry as Record<string, unknown>;
     if (!isMediaType(candidate.mediaType) ||
@@ -97,8 +117,118 @@ function readSwipeFeedback(value: unknown): SwipeFeedback[] {
         ? candidate.genres.filter((genre): genre is string => typeof genre === 'string')
         : [],
       moodTags: readMoodTags(candidate.moodTags),
+      createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : undefined,
     }];
   });
+}
+
+const emptyFormatScores = (): Record<MediaType, number> => ({
+  movie: 0,
+  tv: 0,
+  book: 0,
+  podcast: 0,
+});
+
+function signalWeight(swipe: SwipeFeedback, newestSwipeAt: number) {
+  const timestamp = swipe.createdAt ? Date.parse(swipe.createdAt) : NaN;
+  if (!Number.isFinite(timestamp) || !Number.isFinite(newestSwipeAt)) return 1;
+  // Older feedback still matters, but recent choices have more influence. The
+  // floor prevents a long-time user's early preferences from disappearing.
+  const ageDays = Math.max(0, (newestSwipeAt - timestamp) / 86_400_000);
+  return Math.max(0.35, Math.exp(-ageDays / 120));
+}
+
+/**
+ * Builds live preference scores from immutable swipe decisions. The history is
+ * the source of truth: a reversed decision is not sent here, so Undo naturally
+ * recalculates every score without compensating writes.
+ */
+export function deriveSwipeTaste(feedback: SwipeFeedback[]): SwipeTasteSignals {
+  const formatScores = emptyFormatScores();
+  const genreTotals = new Map<string, { label: string; score: number }>();
+  const newestSwipeAt = Math.max(...feedback.map((swipe) => Date.parse(swipe.createdAt ?? '')).filter(Number.isFinite), NaN);
+
+  for (const swipe of feedback) {
+    const weight = signalWeight(swipe, newestSwipeAt);
+    const decisionScore = (swipe.decision === 'interested' ? 4 : -3) * weight;
+    formatScores[swipe.mediaType] += decisionScore;
+    for (const rawGenre of swipe.genres) {
+      const label = rawGenre.trim();
+      if (!label) continue;
+      const key = label.toLowerCase();
+      const current = genreTotals.get(key) ?? { label, score: 0 };
+      current.score += decisionScore;
+      genreTotals.set(key, current);
+    }
+  }
+
+  const rankedFormats = [...swipeFormats].sort((left, right) =>
+    formatScores[right] - formatScores[left] || left.localeCompare(right),
+  );
+  const rankedGenres = [...genreTotals.values()].sort((left, right) =>
+    right.score - left.score || left.label.localeCompare(right.label),
+  );
+  const topFormats = rankedFormats.filter((format) => formatScores[format] > 0);
+  const topGenres = rankedGenres.filter((genre) => genre.score > 0).map((genre) => genre.label).slice(0, 6);
+  const avoidedGenres = rankedGenres.filter((genre) => genre.score < 0).map((genre) => genre.label).slice(0, 6);
+  // Use normalized keys for comparisons with catalog data. Titles can use
+  // different capitalization for the same genre (for example, "Mystery" vs
+  // "mystery"), while the labels above remain friendly for the UI and Gemini.
+  const genreScores = Object.fromEntries(rankedGenres.map((genre) => [
+    genre.label.toLowerCase(),
+    Math.round(genre.score * 100) / 100,
+  ]));
+  const formatLabel = topFormats.length ? topFormats.slice(0, 2).join(' and ') : 'all formats';
+  const genreLabel = topGenres.length ? topGenres.slice(0, 3).join(', ') : 'new stories';
+  const avoidedLabel = avoidedGenres.length ? ` while lowering ${avoidedGenres.slice(0, 2).join(' and ')}` : '';
+
+  return {
+    formatScores: Object.fromEntries(
+      swipeFormats.map((format) => [format, Math.round(formatScores[format] * 100) / 100]),
+    ) as Record<MediaType, number>,
+    genreScores,
+    topFormats,
+    topGenres,
+    avoidedGenres,
+    summary: feedback.length
+      ? `Recent swipes favor ${genreLabel} in ${formatLabel}${avoidedLabel}.`
+      : 'Swipe a few titles to teach your recommendations.',
+  };
+}
+
+function uniqueLabels(values: string[]) {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = value.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function createSwipeAwareTasteProfile(
+  tasteProfile: TasteProfile | undefined,
+  swipeTaste: SwipeTasteSignals,
+): TasteProfile | undefined {
+  if (!tasteProfile && swipeTaste.topGenres.length === 0 && swipeTaste.topFormats.length === 0) return undefined;
+  const base: TasteProfile = tasteProfile ?? {
+    preferredGenres: [],
+    preferredFormats: [],
+    favoriteStories: [],
+    storyElements: [],
+    dislikedGenres: [],
+    timeAvailability: '',
+    streamingServices: [],
+  };
+  return {
+    ...base,
+    // Preserve explicit onboarding choices while letting fresh swipe evidence
+    // lead Gemini and the local fallback ranking.
+    preferredGenres: uniqueLabels([...swipeTaste.topGenres, ...base.preferredGenres]),
+    preferredFormats: swipeTaste.topFormats.length ? swipeTaste.topFormats : base.preferredFormats,
+    dislikedGenres: uniqueLabels([...base.dislikedGenres, ...swipeTaste.avoidedGenres]),
+    aiTasteSummary: [base.aiTasteSummary, swipeTaste.summary].filter(Boolean).join(' '),
+  };
 }
 
 function sharedGenreCount(a: string[], b: string[]) {
@@ -128,19 +258,33 @@ export function rankSwipeDeck(
   tasteProfile?: TasteProfile,
   deckSeed = 1,
 ) {
+  const swipeTaste = deriveSwipeTaste(feedback);
+  const newestSwipeAt = Math.max(
+    ...feedback.map((swipe) => Date.parse(swipe.createdAt ?? '')).filter(Number.isFinite),
+    NaN,
+  );
+  // Average the feedback signals so a longer history keeps teaching the deck
+  // instead of pushing every card to the score ceiling.
+  const feedbackCount = Math.max(1, feedback.length);
   return candidates.map((candidate) => {
     const preferredGenreBoost = sharedGenreCount(candidate.genres, tasteProfile?.preferredGenres ?? []) * 3;
     const feedbackAdjustment = feedback.reduce((total, swipe) => {
       const similarity = sharedGenreCount(candidate.genres, swipe.genres) * 6
         + moodSimilarity(candidate.moodTags, swipe.moodTags) * 2;
-      return total + (swipe.decision === 'interested' ? similarity : -similarity);
-    }, 0);
-    const score = Math.max(60, Math.min(99, Math.round(80 + preferredGenreBoost + feedbackAdjustment)));
-    const matchingSwipe = feedback.find((swipe) => sharedGenreCount(candidate.genres, swipe.genres) > 0);
-    const feedbackReason = matchingSwipe
-      ? matchingSwipe.decision === 'interested'
-        ? `Your interest in similar ${matchingSwipe.genres[0] || 'stories'} moves this up.`
-        : `Kept lower because it is similar to a ${matchingSwipe.genres[0] || 'style'} you passed.`
+      const direction = swipe.decision === 'interested' ? 1 : -1;
+      return total + direction * similarity * signalWeight(swipe, newestSwipeAt);
+    }, 0) / feedbackCount;
+    const genreScore = (genre: string) => swipeTaste.genreScores[genre.trim().toLowerCase()] ?? 0;
+    const genreSignal = candidate.genres.reduce((total, genre) => total + genreScore(genre), 0)
+      / feedbackCount * 1.5;
+    const formatSignal = swipeTaste.formatScores[candidate.mediaType] / feedbackCount * 1.25;
+    const score = Math.max(60, Math.min(99, Math.round(80 + preferredGenreBoost + feedbackAdjustment + genreSignal + formatSignal)));
+    const preferredGenre = candidate.genres.find((genre) => genreScore(genre) > 0);
+    const avoidedGenre = candidate.genres.find((genre) => genreScore(genre) < 0);
+    const feedbackReason = preferredGenre
+      ? `Your swipes are trending toward ${preferredGenre}, so this moved up.`
+      : avoidedGenre
+        ? `Kept lower because your swipes point away from ${avoidedGenre}.`
       : `Recommended for its ${candidate.genres.slice(0, 2).join(' and ') || 'storytelling'}.`;
 
     return {
@@ -196,21 +340,23 @@ apiRouter.post('/swipe-deck', async (req: Request, res: Response) => {
       : [];
     const tasteProfile = req.body.tasteProfile as TasteProfile | undefined;
     const feedback = readSwipeFeedback(req.body.swipeHistory);
+    const swipeTaste = deriveSwipeTaste(feedback);
+    const effectiveTasteProfile = createSwipeAwareTasteProfile(tasteProfile, swipeTaste);
     const deckSeed = typeof req.body.deckSeed === 'number' && Number.isFinite(req.body.deckSeed)
       ? req.body.deckSeed
       : 1;
     const catalog = await loadCatalog({
       formats: [mediaType],
-      preferredGenres: tasteProfile?.preferredGenres,
+      preferredGenres: effectiveTasteProfile?.preferredGenres,
     });
     const deck = rankSwipeDeck(
       catalog.filter((item) => !excludedMediaIds.includes(item.id)),
       feedback,
-      tasteProfile,
+      effectiveTasteProfile,
       deckSeed,
     );
 
-    return res.json({ deck });
+    return res.json({ deck, tasteSignals: swipeTaste });
   } catch (error) {
     console.error('API /swipe-deck error:', error);
     return res.status(500).json({ error: 'Failed to get swipe deck' });
