@@ -406,9 +406,16 @@ apiRouter.post('/scan', async (req: Request, res: Response) => {
       aiExplanation: explanation,
     });
   } catch (error) {
-    console.error('API /scan error:', error instanceof Error ? error.name : 'Unknown error');
+    const status = typeof error === 'object' && error !== null && 'status' in error && typeof error.status === 'number' ? error.status : 0;
+    console.error('API /scan error:', error instanceof Error ? error.name : 'Unknown error', 'upstream status:', status);
     if (!process.env.GEMINI_API_KEY) {
       return res.status(503).json({ error: 'scanner_not_configured', message: 'The scanner is not configured. Please contact the app administrator.' });
+    }
+    if (status === 401 || status === 403) {
+      return res.status(502).json({ error: 'scanner_auth', message: 'The scanner cannot access the AI service. Please contact the app administrator.' });
+    }
+    if (status === 429) {
+      return res.status(503).json({ error: 'scanner_limit', message: 'The AI scanner has reached its usage limit. Please try again later.' });
     }
     return res.status(502).json({ error: 'scanner_unavailable', message: 'The AI scanner is temporarily unavailable. Please try again.' });
   }
