@@ -92,12 +92,15 @@ export const ScanPage: React.FC = () => {
       return;
     }
     const canvas = document.createElement('canvas');
-    canvas.width = videoRef.current.videoWidth || 640;
-    canvas.height = videoRef.current.videoHeight || 480;
+    const width = videoRef.current.videoWidth || 640;
+    const height = videoRef.current.videoHeight || 480;
+    const scale = Math.min(1, 1280 / Math.max(width, height));
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
       setCapturedImage(dataUrl);
       stopCamera();
       analyzeImage(dataUrl, 'image/jpeg');
@@ -121,9 +124,21 @@ export const ScanPage: React.FC = () => {
 
     const reader = new FileReader();
     reader.onload = () => {
-      const result = reader.result as string;
-      setCapturedImage(result);
-      analyzeImage(result, file.type || 'image/jpeg');
+      const image = new Image();
+      image.onload = () => {
+        const scale = Math.min(1, 1280 / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(image.naturalWidth * scale);
+        canvas.height = Math.round(image.naturalHeight * scale);
+        const context = canvas.getContext('2d');
+        if (!context) { setErrorMessage('Could not process this image. Please try another.'); return; }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const result = canvas.toDataURL('image/jpeg', 0.8);
+        setCapturedImage(result);
+        void analyzeImage(result, 'image/jpeg');
+      };
+      image.onerror = () => setErrorMessage('Could not open this image. Please try a JPEG or PNG.');
+      image.src = reader.result as string;
     };
     reader.readAsDataURL(file);
   };
@@ -140,6 +155,7 @@ export const ScanPage: React.FC = () => {
       const res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(30000),
         body: JSON.stringify({
           imageBase64: base64Data,
           mimeType,
@@ -148,14 +164,16 @@ export const ScanPage: React.FC = () => {
       });
 
       if (!res.ok) {
-        throw new Error(`Server returned ${res.status}`);
+        const data = await res.json().catch(() => ({})) as { message?: string };
+        throw new Error(data.message || 'The scanner is temporarily unavailable. Please try again.');
       }
 
       const data = await res.json() as ScanResult;
+      if (!data.recognized?.title?.trim() || (data.recognized.confidence ?? 0) < 40) throw new Error('Could not identify a title. Try a clearer, well-lit photo.');
       setScanResult(data);
     } catch (err) {
       console.error('Failed to analyze image:', err);
-      setErrorMessage('Failed to recognize the poster or cover. Please try taking a clearer photo.');
+      setErrorMessage(err instanceof Error && err.name === 'TimeoutError' ? 'The scan took too long. Please try again.' : err instanceof Error ? err.message : 'The scanner is temporarily unavailable. Please try again.');
     } finally {
       setAnalyzing(false);
     }
@@ -363,6 +381,8 @@ export const ScanPage: React.FC = () => {
                       </button>
                     </div>
                   </div>
+                ) : errorMessage ? (
+                  <button type="button" onClick={() => { setCapturedImage(null); setErrorMessage(null); }} className="px-4 py-2 bg-[#10283F] text-[#F7F2E9] rounded-xl text-xs">Try another photo</button>
                 ) : null}
               </div>
             </div>

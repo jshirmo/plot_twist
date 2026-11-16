@@ -403,8 +403,11 @@ apiRouter.post('/scan', async (req: Request, res: Response) => {
       aiExplanation: explanation,
     });
   } catch (error) {
-    console.error('API /scan error:', error);
-    return res.status(500).json({ error: 'Failed to scan image' });
+    console.error('API /scan error:', error instanceof Error ? error.name : 'Unknown error');
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(503).json({ error: 'scanner_not_configured', message: 'The scanner is not configured. Please contact the app administrator.' });
+    }
+    return res.status(502).json({ error: 'scanner_unavailable', message: 'The AI scanner is temporarily unavailable. Please try again.' });
   }
 });
 
