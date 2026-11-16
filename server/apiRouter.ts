@@ -346,7 +346,7 @@ apiRouter.post('/swipe-deck', async (req: Request, res: Response) => {
       ? req.body.deckSeed
       : 1;
     const page = typeof req.body.page === 'number' && Number.isFinite(req.body.page)
-      ? Math.max(1, Math.min(mediaType === 'movie' || mediaType === 'tv' ? 500 : 50, Math.floor(req.body.page))) : 1;
+      ? Math.max(1, Math.min(mediaType === 'podcast' ? 50 : 500, Math.floor(req.body.page))) : 1;
     const catalog = await loadCatalog({
       formats: [mediaType],
       preferredGenres: effectiveTasteProfile?.preferredGenres,
