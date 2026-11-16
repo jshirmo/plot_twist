@@ -17,18 +17,33 @@ import { NearYouPage } from './pages/NearYouPage';
 import { ScanPage } from './pages/ScanPage';
 import { ProfilePage } from './pages/ProfilePage';
 
+const tabs = new Set(['home', 'discover', 'swipe', 'library', 'groups', 'near-you', 'scan', 'profile']);
+
+function tabFromUrl() {
+  const url = new URL(window.location.href);
+  const tab = url.searchParams.get('tab') ?? (url.pathname.replace(/^\/|\/$/g, '') || 'home');
+  return tabs.has(tab) ? tab : 'home';
+}
+
 function AppContent() {
-  const { user, userProfile, loading } = useAuth();
-  const [activeTab, setActiveTab] = useState('home');
+  const { user, userProfile } = useAuth();
+  const [activeTab, setActiveTab] = useState(tabFromUrl);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
 
-  // Sync with URL query or hash if provided (e.g. ?tab=swipe or ?autostart=1)
+  const navigate = (tab: string) => {
+    const url = new URL(window.location.href);
+    url.pathname = tab === 'home' ? '/' : `/${tab}`;
+    url.searchParams.delete('tab');
+    url.hash = '';
+    if (url.href !== window.location.href) window.history.pushState(null, '', url);
+    setActiveTab(tab);
+    window.scrollTo(0, 0);
+  };
+
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const tabParam = params.get('tab');
-    if (tabParam) {
-      setActiveTab(tabParam);
-    }
+    const restoreTab = () => setActiveTab(tabFromUrl());
+    window.addEventListener('popstate', restoreTab);
+    return () => window.removeEventListener('popstate', restoreTab);
   }, []);
 
   // When a user signs in and onboarding is not completed, automatically prompt onboarding
@@ -42,14 +57,14 @@ function AppContent() {
     <div className="min-h-screen flex flex-col bg-[#091A2B] text-[#F7F2E9]">
       <Navbar
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={navigate}
         onOpenOnboarding={() => setOnboardingOpen(true)}
       />
 
       <main className="flex-1">
         {activeTab === 'home' && (
           <HomePage
-            onNavigate={setActiveTab}
+            onNavigate={navigate}
             onOpenOnboarding={() => setOnboardingOpen(true)}
           />
         )}
@@ -64,14 +79,14 @@ function AppContent() {
         )}
       </main>
 
-      <Footer onNavigate={setActiveTab} />
+      <Footer onNavigate={navigate} />
 
       <OnboardingModal
         isOpen={onboardingOpen}
         onClose={() => setOnboardingOpen(false)}
         onComplete={() => {
           setOnboardingOpen(false);
-          setActiveTab('discover');
+          navigate('discover');
         }}
       />
     </div>

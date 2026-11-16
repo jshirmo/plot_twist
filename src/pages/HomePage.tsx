@@ -226,13 +226,13 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate, onOpenOnboarding
               Swipe Into Something New
             </h2>
             <p className="text-sm sm:text-base text-[#F7F2E9]/80 leading-relaxed">
-              Tired of endless scrolling? Use our signature Movie Swipe interface to rapidly build your personalized watchlist. Swiping right automatically saves the film to your Firestore Watchlist, while swiping left tunes out unwanted styles. Accidental swipe? Tap Undo anytime.
+              Tired of endless scrolling? Swipe through movies, TV, books, and podcasts. Swipe right to save a title to your library when signed in, or swipe left to pass. Tap Undo if you change your mind.
             </p>
             <button
               onClick={handleStartSwiping}
               className="inline-flex items-center gap-2 px-6 py-3 bg-[#D9B66F] hover:bg-[#D9B66F]/90 text-[#091A2B] font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer"
             >
-              <span>Launch Movie Swipe Deck</span>
+              <span>Launch Swipe Deck</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
