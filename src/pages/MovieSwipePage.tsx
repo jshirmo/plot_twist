@@ -13,7 +13,7 @@ const formatOptions: Array<{ value: MediaType; label: string; libraryLabel: stri
 ];
 const anonymousHistoryKey = 'plot-twist:anonymous-swipe-history:v1';
 const deckSeedsKey = 'plot-twist:swipe-deck-seeds:v1';
-const lastCatalogPageFor = (format: MediaType) => format === 'movie' || format === 'tv' ? 500 : 50;
+const lastCatalogPageFor = (format: MediaType) => format === 'podcast' ? 50 : 500;
 const reviewCycleKey = 'plot-twist:reviewed-swipe-cycle:v1';
 const pagesPerLoad = 4;
 const deckPagesKey = 'plot-twist:swipe-deck-pages:v1';
