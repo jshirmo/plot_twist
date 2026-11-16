@@ -13,7 +13,7 @@ const formatOptions: Array<{ value: MediaType; label: string; libraryLabel: stri
 ];
 const anonymousHistoryKey = 'plot-twist:anonymous-swipe-history:v1';
 const deckSeedsKey = 'plot-twist:swipe-deck-seeds:v1';
-const deckCycleKey = 'plot-twist:swipe-deck-cycle:v1';
+const deckPagesKey = 'plot-twist:swipe-deck-pages:v1';
 
 interface SwipeTasteSignals {
   formatScores: Record<MediaType, number>;
@@ -61,7 +61,7 @@ export const MovieSwipePage: React.FC = () => {
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const sessionHistoryRef = useRef<SwipeDecisionRecord[]>(readSessionValue(anonymousHistoryKey, []));
   const deckSeedsRef = useRef<Partial<Record<MediaType, number>>>(readSessionValue(deckSeedsKey, {}));
-  const deckCycleRef = useRef<Partial<Record<MediaType, string[]>>>(readSessionValue(deckCycleKey, {}));
+  const deckPagesRef = useRef<Partial<Record<MediaType, number>>>(readSessionValue(deckPagesKey, {}));
 
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-200, 200], [-18, 18]);
@@ -93,9 +93,10 @@ export const MovieSwipePage: React.FC = () => {
       body: JSON.stringify({
         mediaType,
         deckSeed: deckSeedFor(mediaType),
+        page: deckPagesRef.current[mediaType] ?? 1,
         tasteProfile: userProfile?.tasteProfile,
         excludedMediaIds: activeHistory
-          .filter((record) => record.mediaType === mediaType && !(deckCycleRef.current[mediaType] ?? []).includes(`${record.id}:${record.createdAt}`))
+          .filter((record) => record.mediaType === mediaType)
           .map((record) => record.mediaId),
         swipeHistory: activeHistory,
       }),
@@ -115,8 +116,9 @@ export const MovieSwipePage: React.FC = () => {
       let records = sessionHistoryRef.current;
       if (user) records = await getUserSwipeHistory(user.uid);
       if (restart) {
-        deckCycleRef.current = { ...deckCycleRef.current, [mediaType]: activeSwipes(records).filter((record) => record.mediaType === mediaType).map((record) => `${record.id}:${record.createdAt}`) };
-        writeSessionValue(deckCycleKey, deckCycleRef.current);
+        const nextPage = Math.min(50, (deckPagesRef.current[mediaType] ?? 1) + 1);
+        deckPagesRef.current = { ...deckPagesRef.current, [mediaType]: nextPage };
+        writeSessionValue(deckPagesKey, deckPagesRef.current);
         delete deckSeedsRef.current[mediaType];
       }
       const response = await requestDeck(records);
@@ -288,8 +290,8 @@ export const MovieSwipePage: React.FC = () => {
       {!loading && !currentMedia && (
         <div className="w-full max-w-md p-10 bg-[#10283F]/30 border border-[#10283F] rounded-3xl text-center space-y-5">
           <CheckCircle2 className="w-12 h-12 text-[#D9B66F] mx-auto" />
-          <h2 className="text-2xl font-serif font-bold text-[#F7F2E9]">You've Reached the End of This Deck!</h2>
-          <p className="text-sm text-[#F7F2E9]/70">Interested titles are in your {selectedFormat.libraryLabel}.</p>
+          <h2 className="text-2xl font-serif font-bold text-[#F7F2E9]">No new titles in this batch</h2>
+          <p className="text-sm text-[#F7F2E9]/70">Refresh to look for more. Previously swiped titles stay in your history.</p>
           <div className="pt-2 flex flex-col sm:flex-row gap-3 justify-center">
             <button onClick={() => void loadDeck(true)} className="px-6 py-3 bg-[#D9B66F] text-[#091A2B] font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-[#D9B66F]/90 transition-all">Refresh Deck</button>
             {undoAvailable && <button onClick={() => void handleUndo()} className="px-6 py-3 bg-[#10283F] text-[#F7F2E9] border border-[#10283F] font-semibold text-xs uppercase tracking-wider rounded-xl hover:border-[#D9B66F]">Undo Last Swipe</button>}
