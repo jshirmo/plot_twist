@@ -64,10 +64,21 @@ test('Gemini can rank real filtered titles but cannot add titles or replace meta
   const results = await generateRecommendations({
     moodSettings: mood,
     formats: ['movie'],
+    tasteProfile: {
+      preferredGenres: ['Mystery'],
+      preferredFormats: ['movie'],
+      favoriteStories: [],
+      storyElements: [],
+      dislikedGenres: [],
+      timeAvailability: 'any',
+      streamingServices: [],
+      aiTasteSummary: 'Recent swipes favor Mystery in movie.',
+    },
     ratingFeedback: { liked: [allowed], disliked: [disliked] },
   });
   assert.match(requestUrl, /gemini-3\.8-flash:generateContent/);
   assert.ok(prompt.includes(allowed.title));
+  assert.match(prompt, /Learned From Swipes: Recent swipes favor Mystery in movie\./);
   assert.deepEqual(results.map(({ id, title }) => ({ id, title })), [{ id: allowed.id, title: allowed.title }]);
   assert.equal(results[0].compatibilityScore, 95);
 });

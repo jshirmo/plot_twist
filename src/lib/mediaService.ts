@@ -148,7 +148,11 @@ export async function recordSwipeDecision(
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Authentication required to record swipe');
 
-  const docId = `${currentUser.uid}_${swipe.mediaId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  // The media type is deliberately part of the ID: a movie and TV show can share
+  // a provider ID, but they must retain independent swipe decisions.
+  const docId = [currentUser.uid, swipe.mediaType, swipe.mediaId]
+    .join('_')
+    .replace(/[^a-zA-Z0-9_-]/g, '_');
   const path = `swipeHistory/${docId}`;
   const now = new Date().toISOString();
 
@@ -162,16 +166,20 @@ export async function recordSwipeDecision(
   try {
     await setDoc(doc(db, 'swipeHistory', docId), record);
 
-    // If swipe was 'interested', also automatically add to Movie Watchlist in savedMedia!
+    // Let Leah's existing save function route the title into its format-specific library list.
     if (swipe.decision === 'interested') {
       await saveMediaItem({
         mediaId: swipe.mediaId,
-        mediaType: 'movie',
+        mediaType: swipe.mediaType,
         title: swipe.title,
         posterUrl: swipe.posterUrl,
         genres: swipe.genres,
         status: 'watchlist',
-        source: 'tmdb',
+        source: swipe.mediaType === 'book'
+          ? 'google_books'
+          : swipe.mediaType === 'podcast'
+            ? 'podcast'
+            : 'tmdb',
       });
     }
 
@@ -205,9 +213,9 @@ export async function undoLastSwipeDecision(userId: string): Promise<SwipeDecisi
     // Mark feedback as reversed
     await setDoc(doc(db, 'swipeHistory', lastDoc.id), { feedbackStatus: 'reversed' }, { merge: true });
 
-    // If it was interested, remove from watchlist or update status
+    // Remove the matching typed record, never a same-ID item from another format.
     if (data.decision === 'interested') {
-      await removeSavedMedia(data.mediaId);
+      await removeSavedMedia(data.mediaId, data.mediaType);
     }
 
     return { ...data, feedbackStatus: 'reversed' };
@@ -228,7 +236,7 @@ export async function getUserSwipeHistory(userId: string): Promise<SwipeDecision
     const snap = await getDocs(q);
     const records: SwipeDecisionRecord[] = [];
     snap.forEach((d) => records.push(d.data() as SwipeDecisionRecord));
-    return records;
+    return records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }

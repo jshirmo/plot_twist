@@ -1,14 +1,36 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { saveMediaItem } from '../lib/mediaService';
+import type { MediaType } from '../types';
 import { Camera, Upload, Sparkles, Check, AlertCircle, Bookmark, RefreshCw } from 'lucide-react';
+
+interface ScanResult {
+  recognized: {
+    title?: string;
+    creator?: string;
+    mediaType?: MediaType;
+    genres?: string[];
+    confidence?: number;
+  };
+  catalogMatch?: {
+    id: string;
+    title: string;
+    posterUrl: string;
+    creator?: string;
+    genres: string[];
+  } | null;
+  matchPercent?: number;
+  compatibilityScore?: number;
+  why?: string;
+  aiExplanation?: string;
+}
 
 export const ScanPage: React.FC = () => {
   const { user, userProfile, signIn } = useAuth();
   const [cameraActive, setCameraActive] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [scanResult, setScanResult] = useState<any | null>(null);
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
@@ -18,15 +40,22 @@ export const ScanPage: React.FC = () => {
 
   const startCamera = async () => {
     setErrorMessage(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setErrorMessage('This browser does not support a live camera. Please use image upload instead.');
+      return;
+    }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+      // Mobile devices prefer the rear camera; desktop browsers fall back to any available camera.
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       }
+      streamRef.current = stream;
       setCameraActive(true);
     } catch (err) {
       console.error('Camera access error:', err);
@@ -43,13 +72,25 @@ export const ScanPage: React.FC = () => {
   };
 
   useEffect(() => {
+    const video = videoRef.current;
+    if (!cameraActive || !video || !streamRef.current) return;
+    video.srcObject = streamRef.current;
+    void video.play().catch(() => {
+      setErrorMessage('Camera started, but the preview could not play. Try the upload option instead.');
+    });
+  }, [cameraActive]);
+
+  useEffect(() => {
     return () => {
       stopCamera();
     };
   }, []);
 
   const capturePhoto = () => {
-    if (!videoRef.current) return;
+    if (!videoRef.current || videoRef.current.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      setErrorMessage('The camera is still starting. Please wait a moment and try again.');
+      return;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = videoRef.current.videoWidth || 640;
     canvas.height = videoRef.current.videoHeight || 480;
@@ -66,6 +107,12 @@ export const ScanPage: React.FC = () => {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
+
+    if (!file.type.startsWith('image/')) {
+      setErrorMessage('Please choose an image file.');
+      return;
+    }
 
     if (file.size > 10 * 1024 * 1024) {
       setErrorMessage('Image file is too large (maximum 10MB).');
@@ -89,6 +136,7 @@ export const ScanPage: React.FC = () => {
 
     try {
       const base64Data = dataUrl.split(',')[1];
+      if (!base64Data) throw new Error('Image data was unavailable');
       const res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -103,7 +151,7 @@ export const ScanPage: React.FC = () => {
         throw new Error(`Server returned ${res.status}`);
       }
 
-      const data = await res.json();
+      const data = await res.json() as ScanResult;
       setScanResult(data);
     } catch (err) {
       console.error('Failed to analyze image:', err);
@@ -122,23 +170,30 @@ export const ScanPage: React.FC = () => {
 
     const recognized = scanResult.recognized;
     const catalogMatch = scanResult.catalogMatch;
+    const mediaType = recognized.mediaType || 'book';
+    if (!recognized.title?.trim()) {
+      setErrorMessage('No title was recognized, so there is nothing to save yet. Try a clearer image.');
+      return;
+    }
 
     try {
       await saveMediaItem({
-        mediaId: catalogMatch ? catalogMatch.id : `scan_${Date.now()}`,
-        mediaType: recognized.mediaType || 'book',
+        mediaId: catalogMatch ? catalogMatch.id : `scan_${mediaType}_${Date.now()}`,
+        mediaType,
         title: catalogMatch ? catalogMatch.title : recognized.title,
-        posterUrl: catalogMatch ? catalogMatch.posterUrl : capturedImage || '',
+        // Do not put an uploaded base64 image into Firestore; it can exceed document limits.
+        posterUrl: catalogMatch ? catalogMatch.posterUrl : '',
         creator: catalogMatch ? catalogMatch.creator : recognized.creator,
         genres: catalogMatch ? catalogMatch.genres : recognized.genres || ['Mystery'],
         status: 'watchlist',
         source: 'scan',
-        aiExplanation: scanResult.aiExplanation,
+        aiExplanation: scanResult.why || scanResult.aiExplanation,
         compatibilityScore: scanResult.compatibilityScore,
       });
       setSavedSuccess(true);
     } catch (err) {
       console.error('Error saving scanned item:', err);
+      setErrorMessage('We could not save this title to your library. Please try again.');
     }
   };
 
@@ -199,6 +254,7 @@ export const ScanPage: React.FC = () => {
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
+                capture="environment"
                 className="hidden"
                 onChange={handleFileUpload}
               />
@@ -263,7 +319,7 @@ export const ScanPage: React.FC = () => {
                         {scanResult.recognized?.mediaType || 'Media'}
                       </span>
                       <span className="text-xs font-mono font-bold text-emerald-400">
-                        {scanResult.compatibilityScore}% Compatibility
+                        {scanResult.matchPercent ?? scanResult.recognized?.confidence ?? 0}% Match
                       </span>
                     </div>
 
@@ -278,7 +334,7 @@ export const ScanPage: React.FC = () => {
                     )}
 
                     <p className="text-xs text-[#F7F2E9]/80 leading-relaxed italic bg-[#10283F]/50 p-2.5 rounded-lg border border-[#D9B66F]/20">
-                      "{scanResult.aiExplanation}"
+                      {scanResult.why || scanResult.aiExplanation || 'Recognized from the cover artwork and title details.'}
                     </p>
 
                     <div className="pt-2 flex items-center gap-3">

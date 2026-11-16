@@ -83,6 +83,8 @@ Current Mood Sliders (1 to 5 scale):
 
 User Taste Profile:
 - Preferred Genres: ${(params.tasteProfile?.preferredGenres || []).join(', ') || 'Eclectic'}
+- Learned From Swipes: ${params.tasteProfile?.aiTasteSummary || 'No swipe history yet'}
+- Inferred Preferred Formats: ${(params.tasteProfile?.preferredFormats || []).join(', ') || 'No format preference yet'}
 - Disliked Genres: ${(params.tasteProfile?.dislikedGenres || []).join(', ') || 'None'}
 - Favorite Stories: ${(params.tasteProfile?.favoriteStories || []).join(', ') || 'Diverse'}
 - Story Elements Enjoyed: ${(params.tasteProfile?.storyElements || []).join(', ') || 'Surprises, depth'}
@@ -98,7 +100,7 @@ CRITICAL RULES:
 2. Provide a 'compatibilityScore' between 60 and 99 reflecting how well it matches their specific mood and taste.
 3. Provide a concise, engaging, spoiler-free 'aiExplanation' (1-2 sentences) explaining WHY this matches their current mood and taste.
 4. Return up to 6 of the best matching candidates ordered by match score.
-5. Use ratings as soft taste signals, favoring genres from liked titles and de-emphasizing genres from disliked titles while respecting the current mood.
+5. Use ratings and the swipe-learning signals as soft taste evidence, favoring genres and formats the user repeatedly selects while respecting the current mood and explicit filters.
 
 Candidates JSON:
 ${JSON.stringify(candidateSummary, null, 2)}`;
@@ -187,11 +189,16 @@ export function rankCandidatesLocally(
       genreBoost = matches.length * 3;
     }
 
+    // `preferredFormats` may include signals derived from the user's active
+    // swipe history. This keeps the no-key fallback aligned with Gemini's
+    // prompt instead of reverting to a static catalog order.
+    const formatBoost = taste?.preferredFormats?.includes(item.mediaType as typeof taste.preferredFormats[number]) ? 4 : 0;
+
     const genres = new Set(item.genres.map((genre) => genre.trim().toLowerCase()));
     const positiveMatches = [...genres].filter((genre) => liked.has(genre)).length;
     const negativeMatches = [...genres].filter((genre) => disliked.has(genre)).length;
     const ratingAdjustment = Math.max(-12, Math.min(12, 4 * (positiveMatches - negativeMatches)));
-    const finalScore = Math.max(60, Math.min(99, moodScore + genreBoost + ratingAdjustment));
+    const finalScore = Math.max(60, Math.min(99, moodScore + genreBoost + formatBoost + ratingAdjustment));
 
     return {
       ...toRecommendationMetadata(item),
