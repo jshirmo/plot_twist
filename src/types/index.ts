@@ -77,20 +77,23 @@ export interface SwipeDecisionRecord {
   mediaId: string;
   title: string;
   posterUrl: string;
-  mediaType: 'movie';
+  mediaType: MediaType;
   decision: 'interested' | 'pass';
   feedbackStatus: 'active' | 'reversed';
   genres: string[];
+  moodTags?: MoodSettings;
   createdAt: string;
 }
 
 export interface MovieSwipeCard {
   id: string;
+  mediaType: MediaType;
   title: string;
   releaseYear: string;
   posterUrl: string;
   backdropUrl?: string;
   genres: string[];
+  pageCount?: number;
   runtimeMinutes?: number;
   overview: string;
   aiExplanation: string;
@@ -98,6 +101,7 @@ export interface MovieSwipeCard {
   streamingProviders?: string[];
   director?: string;
   cast?: string[];
+  moodTags: MoodSettings;
 }
 
 export interface GroupItem {

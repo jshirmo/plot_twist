@@ -4,6 +4,7 @@ import { parseRatingFeedback } from './ratingFeedback';
 import { loadCatalog, VERIFIED_CATALOG } from './mediaCatalog';
 import { searchPodcasts, getTrendingPodcasts, getPodcastEpisodes, podcastSource } from './podcastService';
 import { getLiveEvents, getNearbyBookstores, localServiceStatus, type LocationQuery } from './localService';
+import type { MediaType, MoodSettings, TasteProfile } from '../src/types';
 
 export const apiRouter = Router();
 
@@ -16,10 +17,20 @@ apiRouter.post('/recommendations', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'moodSettings are required' });
     }
 
+    // Swipe history is the durable learning record. We derive its scores for each
+    // request instead of storing a second mutable aggregate, so Undo immediately
+    // removes its influence from both local and Gemini-powered recommendations.
+    const swipeFeedback = readSwipeFeedback(req.body.swipeHistory);
+    const swipeTaste = deriveSwipeTaste(swipeFeedback);
+    const effectiveTasteProfile = createSwipeAwareTasteProfile(tasteProfile, swipeTaste);
+    const inferredFormats = swipeTaste.topFormats.length ? swipeTaste.topFormats : undefined;
+
     const results = await generateRecommendations({
       moodSettings,
-      tasteProfile,
-      formats,
+      tasteProfile: effectiveTasteProfile,
+      // Explicit filters always win. Inferred formats make a first request dynamic
+      // when the caller has not supplied a format filter.
+      formats: Array.isArray(formats) && formats.length ? formats : inferredFormats,
       maxDurationMinutes,
       streamingServices,
       excludedMediaIds,
@@ -33,30 +44,319 @@ apiRouter.post('/recommendations', async (req: Request, res: Response) => {
   }
 });
 
-// Endpoint for Movie Swipe Deck
+const swipeFormats: MediaType[] = ['movie', 'tv', 'book', 'podcast'];
+
+interface ScanRecognition {
+  title?: string;
+  creator?: string;
+  mediaType?: MediaType;
+  genres?: string[];
+  summary?: string;
+  confidence?: number;
+}
+
+interface SwipeFeedback {
+  mediaId: string;
+  mediaType: MediaType;
+  decision: 'interested' | 'pass';
+  feedbackStatus: 'active' | 'reversed';
+  genres: string[];
+  moodTags?: MoodSettings;
+  createdAt?: string;
+}
+
+export interface SwipeTasteSignals {
+  formatScores: Record<MediaType, number>;
+  genreScores: Record<string, number>;
+  topFormats: MediaType[];
+  topGenres: string[];
+  avoidedGenres: string[];
+  summary: string;
+}
+
+function isMediaType(value: unknown): value is MediaType {
+  return typeof value === 'string' && swipeFormats.includes(value as MediaType);
+}
+
+function readMoodTags(value: unknown): MoodSettings | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Record<string, unknown>;
+  const read = (key: keyof MoodSettings) => {
+    const score = candidate[key];
+    return typeof score === 'number' && Number.isFinite(score)
+      ? Math.max(1, Math.min(5, score))
+      : undefined;
+  };
+  const darkness = read('darkness');
+  const romance = read('romance');
+  const suspense = read('suspense');
+  const plotTwists = read('plotTwists');
+  const emotionalIntensity = read('emotionalIntensity');
+  return darkness === undefined || romance === undefined || suspense === undefined ||
+    plotTwists === undefined || emotionalIntensity === undefined
+    ? undefined
+    : { darkness, romance, suspense, plotTwists, emotionalIntensity };
+}
+
+function readSwipeFeedback(value: unknown): SwipeFeedback[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 100).flatMap((entry): SwipeFeedback[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const candidate = entry as Record<string, unknown>;
+    if (!isMediaType(candidate.mediaType) ||
+      typeof candidate.mediaId !== 'string' ||
+      (candidate.decision !== 'interested' && candidate.decision !== 'pass') ||
+      candidate.feedbackStatus !== 'active') return [];
+
+    return [{
+      mediaId: candidate.mediaId,
+      mediaType: candidate.mediaType,
+      decision: candidate.decision,
+      feedbackStatus: 'active',
+      genres: Array.isArray(candidate.genres)
+        ? candidate.genres.filter((genre): genre is string => typeof genre === 'string')
+        : [],
+      moodTags: readMoodTags(candidate.moodTags),
+      createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : undefined,
+    }];
+  });
+}
+
+const emptyFormatScores = (): Record<MediaType, number> => ({
+  movie: 0,
+  tv: 0,
+  book: 0,
+  podcast: 0,
+});
+
+function signalWeight(swipe: SwipeFeedback, newestSwipeAt: number) {
+  const timestamp = swipe.createdAt ? Date.parse(swipe.createdAt) : NaN;
+  if (!Number.isFinite(timestamp) || !Number.isFinite(newestSwipeAt)) return 1;
+  // Older feedback still matters, but recent choices have more influence. The
+  // floor prevents a long-time user's early preferences from disappearing.
+  const ageDays = Math.max(0, (newestSwipeAt - timestamp) / 86_400_000);
+  return Math.max(0.35, Math.exp(-ageDays / 120));
+}
+
+/**
+ * Builds live preference scores from immutable swipe decisions. The history is
+ * the source of truth: a reversed decision is not sent here, so Undo naturally
+ * recalculates every score without compensating writes.
+ */
+export function deriveSwipeTaste(feedback: SwipeFeedback[]): SwipeTasteSignals {
+  const formatScores = emptyFormatScores();
+  const genreTotals = new Map<string, { label: string; score: number }>();
+  const newestSwipeAt = Math.max(...feedback.map((swipe) => Date.parse(swipe.createdAt ?? '')).filter(Number.isFinite), NaN);
+
+  for (const swipe of feedback) {
+    const weight = signalWeight(swipe, newestSwipeAt);
+    const decisionScore = (swipe.decision === 'interested' ? 4 : -3) * weight;
+    formatScores[swipe.mediaType] += decisionScore;
+    for (const rawGenre of swipe.genres) {
+      const label = rawGenre.trim();
+      if (!label) continue;
+      const key = label.toLowerCase();
+      const current = genreTotals.get(key) ?? { label, score: 0 };
+      current.score += decisionScore;
+      genreTotals.set(key, current);
+    }
+  }
+
+  const rankedFormats = [...swipeFormats].sort((left, right) =>
+    formatScores[right] - formatScores[left] || left.localeCompare(right),
+  );
+  const rankedGenres = [...genreTotals.values()].sort((left, right) =>
+    right.score - left.score || left.label.localeCompare(right.label),
+  );
+  const topFormats = rankedFormats.filter((format) => formatScores[format] > 0);
+  const topGenres = rankedGenres.filter((genre) => genre.score > 0).map((genre) => genre.label).slice(0, 6);
+  const avoidedGenres = rankedGenres.filter((genre) => genre.score < 0).map((genre) => genre.label).slice(0, 6);
+  // Use normalized keys for comparisons with catalog data. Titles can use
+  // different capitalization for the same genre (for example, "Mystery" vs
+  // "mystery"), while the labels above remain friendly for the UI and Gemini.
+  const genreScores = Object.fromEntries(rankedGenres.map((genre) => [
+    genre.label.toLowerCase(),
+    Math.round(genre.score * 100) / 100,
+  ]));
+  const formatLabel = topFormats.length ? topFormats.slice(0, 2).join(' and ') : 'all formats';
+  const genreLabel = topGenres.length ? topGenres.slice(0, 3).join(', ') : 'new stories';
+  const avoidedLabel = avoidedGenres.length ? ` while lowering ${avoidedGenres.slice(0, 2).join(' and ')}` : '';
+
+  return {
+    formatScores: Object.fromEntries(
+      swipeFormats.map((format) => [format, Math.round(formatScores[format] * 100) / 100]),
+    ) as Record<MediaType, number>,
+    genreScores,
+    topFormats,
+    topGenres,
+    avoidedGenres,
+    summary: feedback.length
+      ? `Recent swipes favor ${genreLabel} in ${formatLabel}${avoidedLabel}.`
+      : 'Swipe a few titles to teach your recommendations.',
+  };
+}
+
+function uniqueLabels(values: string[]) {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = value.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function createSwipeAwareTasteProfile(
+  tasteProfile: TasteProfile | undefined,
+  swipeTaste: SwipeTasteSignals,
+): TasteProfile | undefined {
+  if (!tasteProfile && swipeTaste.topGenres.length === 0 && swipeTaste.topFormats.length === 0) return undefined;
+  const base: TasteProfile = tasteProfile ?? {
+    preferredGenres: [],
+    preferredFormats: [],
+    favoriteStories: [],
+    storyElements: [],
+    dislikedGenres: [],
+    timeAvailability: '',
+    streamingServices: [],
+  };
+  return {
+    ...base,
+    // Preserve explicit onboarding choices while letting fresh swipe evidence
+    // lead Gemini and the local fallback ranking.
+    preferredGenres: uniqueLabels([...swipeTaste.topGenres, ...base.preferredGenres]),
+    preferredFormats: swipeTaste.topFormats.length ? swipeTaste.topFormats : base.preferredFormats,
+    dislikedGenres: uniqueLabels([...base.dislikedGenres, ...swipeTaste.avoidedGenres]),
+    aiTasteSummary: [base.aiTasteSummary, swipeTaste.summary].filter(Boolean).join(' '),
+  };
+}
+
+function sharedGenreCount(a: string[], b: string[]) {
+  const left = new Set(a.map((genre) => genre.trim().toLowerCase()).filter(Boolean));
+  const right = new Set(b.map((genre) => genre.trim().toLowerCase()).filter(Boolean));
+  return [...left].filter((genre) => right.has(genre)).length;
+}
+
+function moodSimilarity(a: MoodSettings, b?: MoodSettings) {
+  if (!b) return 0;
+  const keys: Array<keyof MoodSettings> = ['darkness', 'romance', 'suspense', 'plotTwists', 'emotionalIntensity'];
+  const distance = keys.reduce((sum, key) => sum + Math.abs(a[key] - b[key]), 0);
+  return Math.max(0, 5 - distance / keys.length);
+}
+
+function seededTieBreaker(id: string, seed: number) {
+  let hash = (seed >>> 0) || 1;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = Math.imul(hash ^ id.charCodeAt(index), 0x45d9f3b) >>> 0;
+  }
+  return hash;
+}
+
+export function rankSwipeDeck(
+  candidates: Awaited<ReturnType<typeof loadCatalog>>,
+  feedback: SwipeFeedback[],
+  tasteProfile?: TasteProfile,
+  deckSeed = 1,
+) {
+  const swipeTaste = deriveSwipeTaste(feedback);
+  const newestSwipeAt = Math.max(
+    ...feedback.map((swipe) => Date.parse(swipe.createdAt ?? '')).filter(Number.isFinite),
+    NaN,
+  );
+  // Average the feedback signals so a longer history keeps teaching the deck
+  // instead of pushing every card to the score ceiling.
+  const feedbackCount = Math.max(1, feedback.length);
+  return candidates.map((candidate) => {
+    const preferredGenreBoost = sharedGenreCount(candidate.genres, tasteProfile?.preferredGenres ?? []) * 3;
+    const feedbackAdjustment = feedback.reduce((total, swipe) => {
+      const similarity = sharedGenreCount(candidate.genres, swipe.genres) * 6
+        + moodSimilarity(candidate.moodTags, swipe.moodTags) * 2;
+      const direction = swipe.decision === 'interested' ? 1 : -1;
+      return total + direction * similarity * signalWeight(swipe, newestSwipeAt);
+    }, 0) / feedbackCount;
+    const genreScore = (genre: string) => swipeTaste.genreScores[genre.trim().toLowerCase()] ?? 0;
+    const genreSignal = candidate.genres.reduce((total, genre) => total + genreScore(genre), 0)
+      / feedbackCount * 1.5;
+    const formatSignal = swipeTaste.formatScores[candidate.mediaType] / feedbackCount * 1.25;
+    const score = Math.max(60, Math.min(99, Math.round(80 + preferredGenreBoost + feedbackAdjustment + genreSignal + formatSignal)));
+    const preferredGenre = candidate.genres.find((genre) => genreScore(genre) > 0);
+    const avoidedGenre = candidate.genres.find((genre) => genreScore(genre) < 0);
+    const feedbackReason = preferredGenre
+      ? `Your swipes are trending toward ${preferredGenre}, so this moved up.`
+      : avoidedGenre
+        ? `Kept lower because your swipes point away from ${avoidedGenre}.`
+      : `Recommended for its ${candidate.genres.slice(0, 2).join(' and ') || 'storytelling'}.`;
+
+    return {
+      id: candidate.id,
+      mediaType: candidate.mediaType,
+      title: candidate.title,
+      releaseYear: candidate.releaseYear,
+      posterUrl: candidate.posterUrl,
+      genres: candidate.genres,
+      pageCount: candidate.pageCount,
+      runtimeMinutes: candidate.runtimeMinutes,
+      overview: candidate.overview,
+      aiExplanation: feedbackReason,
+      compatibilityScore: score,
+      streamingProviders: candidate.streamingProviders,
+      director: candidate.creator,
+      moodTags: candidate.moodTags,
+    };
+  }).sort((a, b) =>
+    b.compatibilityScore - a.compatibilityScore ||
+    seededTieBreaker(a.id, deckSeed) - seededTieBreaker(b.id, deckSeed)
+  );
+}
+
+function asPercent(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(100, Math.round(value)))
+    : 0;
+}
+
+function compactText(value: unknown, maximum = 180) {
+  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, maximum) : '';
+}
+
+export function describeScanMatch(recognition: ScanRecognition, tasteProfile?: TasteProfile) {
+  const summary = compactText(recognition.summary);
+  const recognizedGenres = recognition.genres ?? [];
+  const matchingGenres = recognizedGenres.filter((genre) => tasteProfile?.preferredGenres?.some(
+    (preferred) => preferred.toLowerCase() === genre.toLowerCase(),
+  ));
+  if (matchingGenres.length) {
+    return `It shares your interest in ${matchingGenres.slice(0, 2).join(' and ')}. ${summary}`.trim();
+  }
+  return summary || `Recognized from the cover artwork and title details.`;
+}
+
+// Endpoint for the four-format swipe deck
 apiRouter.post('/swipe-deck', async (req: Request, res: Response) => {
   try {
-    const { excludedMediaIds, tasteProfile } = req.body;
-
-    const movieCandidates = VERIFIED_CATALOG.filter(
-      (m) => m.mediaType === 'movie' && (!excludedMediaIds || !excludedMediaIds.includes(m.id))
+    const mediaType = isMediaType(req.body.mediaType) ? req.body.mediaType : 'movie';
+    const excludedMediaIds = Array.isArray(req.body.excludedMediaIds)
+      ? req.body.excludedMediaIds.filter((id: unknown): id is string => typeof id === 'string')
+      : [];
+    const tasteProfile = req.body.tasteProfile as TasteProfile | undefined;
+    const feedback = readSwipeFeedback(req.body.swipeHistory);
+    const swipeTaste = deriveSwipeTaste(feedback);
+    const effectiveTasteProfile = createSwipeAwareTasteProfile(tasteProfile, swipeTaste);
+    const deckSeed = typeof req.body.deckSeed === 'number' && Number.isFinite(req.body.deckSeed)
+      ? req.body.deckSeed
+      : 1;
+    const catalog = await loadCatalog({
+      formats: [mediaType],
+      preferredGenres: effectiveTasteProfile?.preferredGenres,
+    });
+    const deck = rankSwipeDeck(
+      catalog.filter((item) => !excludedMediaIds.includes(item.id)),
+      feedback,
+      effectiveTasteProfile,
+      deckSeed,
     );
 
-    const deck = movieCandidates.map((m) => ({
-      id: m.id,
-      title: m.title,
-      releaseYear: m.releaseYear,
-      posterUrl: m.posterUrl,
-      genres: m.genres,
-      runtimeMinutes: m.runtimeMinutes,
-      overview: m.overview,
-      aiExplanation: `Recommended for you based on your interest in ${m.genres.slice(0, 2).join(' & ')}.`,
-      compatibilityScore: 88,
-      streamingProviders: m.streamingProviders,
-      director: m.creator,
-    }));
-
-    return res.json({ deck });
+    return res.json({ deck, tasteSignals: swipeTaste });
   } catch (error) {
     console.error('API /swipe-deck error:', error);
     return res.status(500).json({ error: 'Failed to get swipe deck' });
@@ -72,22 +372,34 @@ apiRouter.post('/scan', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'imageBase64 is required' });
     }
 
-    const recognition = await scanMediaPosterOrCover(imageBase64, mimeType || 'image/jpeg');
+    const scanned = await scanMediaPosterOrCover(imageBase64, mimeType || 'image/jpeg') as ScanRecognition;
+    const recognition: ScanRecognition = {
+      ...scanned,
+      mediaType: isMediaType(scanned.mediaType) ? scanned.mediaType : undefined,
+      genres: Array.isArray(scanned.genres)
+        ? scanned.genres.filter((genre): genre is string => typeof genre === 'string').slice(0, 10)
+        : [],
+      confidence: asPercent(scanned.confidence),
+    };
 
-    // Find any catalog match or format response
+    // A title can exist in more than one format, so preserve the detected format.
     const catalogMatch = VERIFIED_CATALOG.find(
-      (c) => c.title.toLowerCase() === recognition.title?.toLowerCase()
+      (c) => c.mediaType === recognition.mediaType && c.title.toLowerCase() === recognition.title?.toLowerCase()
     );
 
-    const compatibilityScore = catalogMatch ? 92 : 84;
-    const explanation = catalogMatch
-      ? `Recognized '${catalogMatch.title}'. This fits your profile with its notable plot twists and depth.`
-      : `Recognized '${recognition.title || 'Media Title'}'. High compatibility with your preferred genres.`;
+    const matchPercent = asPercent(recognition.confidence);
+    const matchingGenres = (recognition.genres ?? []).filter((genre) =>
+      tasteProfile?.preferredGenres?.some((preferred: string) => preferred.toLowerCase() === genre.toLowerCase()),
+    ).length;
+    const compatibilityScore = Math.max(50, Math.min(99, 70 + matchingGenres * 10));
+    const explanation = describeScanMatch(recognition, tasteProfile);
 
     return res.json({
       recognized: recognition,
       catalogMatch: catalogMatch || null,
+      matchPercent,
       compatibilityScore,
+      why: explanation,
       aiExplanation: explanation,
     });
   } catch (error) {
