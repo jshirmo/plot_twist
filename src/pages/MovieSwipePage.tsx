@@ -13,6 +13,7 @@ const formatOptions: Array<{ value: MediaType; label: string; libraryLabel: stri
 ];
 const anonymousHistoryKey = 'plot-twist:anonymous-swipe-history:v1';
 const deckSeedsKey = 'plot-twist:swipe-deck-seeds:v1';
+const deckCycleKey = 'plot-twist:swipe-deck-cycle:v1';
 
 interface SwipeTasteSignals {
   formatScores: Record<MediaType, number>;
@@ -60,6 +61,7 @@ export const MovieSwipePage: React.FC = () => {
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const sessionHistoryRef = useRef<SwipeDecisionRecord[]>(readSessionValue(anonymousHistoryKey, []));
   const deckSeedsRef = useRef<Partial<Record<MediaType, number>>>(readSessionValue(deckSeedsKey, {}));
+  const deckCycleRef = useRef<Partial<Record<MediaType, string[]>>>(readSessionValue(deckCycleKey, {}));
 
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-200, 200], [-18, 18]);
@@ -93,7 +95,7 @@ export const MovieSwipePage: React.FC = () => {
         deckSeed: deckSeedFor(mediaType),
         tasteProfile: userProfile?.tasteProfile,
         excludedMediaIds: activeHistory
-          .filter((record) => record.mediaType === mediaType)
+          .filter((record) => record.mediaType === mediaType && !(deckCycleRef.current[mediaType] ?? []).includes(`${record.id}:${record.createdAt}`))
           .map((record) => record.mediaId),
         swipeHistory: activeHistory,
       }),
@@ -106,12 +108,17 @@ export const MovieSwipePage: React.FC = () => {
     };
   }, [deckSeedFor, mediaType, userProfile?.tasteProfile]);
 
-  const loadDeck = useCallback(async () => {
+  const loadDeck = useCallback(async (restart = false) => {
     setLoading(true);
     setStatusNotice(null);
     try {
       let records = sessionHistoryRef.current;
       if (user) records = await getUserSwipeHistory(user.uid);
+      if (restart) {
+        deckCycleRef.current = { ...deckCycleRef.current, [mediaType]: activeSwipes(records).filter((record) => record.mediaType === mediaType).map((record) => `${record.id}:${record.createdAt}`) };
+        writeSessionValue(deckCycleKey, deckCycleRef.current);
+        delete deckSeedsRef.current[mediaType];
+      }
       const response = await requestDeck(records);
       setSwipeHistory(records);
       setDeck(response.deck);
@@ -124,7 +131,7 @@ export const MovieSwipePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [requestDeck, user]);
+  }, [mediaType, requestDeck, user]);
 
   useEffect(() => {
     void loadDeck();
@@ -284,7 +291,7 @@ export const MovieSwipePage: React.FC = () => {
           <h2 className="text-2xl font-serif font-bold text-[#F7F2E9]">You've Reached the End of This Deck!</h2>
           <p className="text-sm text-[#F7F2E9]/70">Interested titles are in your {selectedFormat.libraryLabel}.</p>
           <div className="pt-2 flex flex-col sm:flex-row gap-3 justify-center">
-            <button onClick={() => void loadDeck()} className="px-6 py-3 bg-[#D9B66F] text-[#091A2B] font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-[#D9B66F]/90 transition-all">Refresh Deck</button>
+            <button onClick={() => void loadDeck(true)} className="px-6 py-3 bg-[#D9B66F] text-[#091A2B] font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-[#D9B66F]/90 transition-all">Refresh Deck</button>
             {undoAvailable && <button onClick={() => void handleUndo()} className="px-6 py-3 bg-[#10283F] text-[#F7F2E9] border border-[#10283F] font-semibold text-xs uppercase tracking-wider rounded-xl hover:border-[#D9B66F]">Undo Last Swipe</button>}
           </div>
         </div>
