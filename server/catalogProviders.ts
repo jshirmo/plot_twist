@@ -120,8 +120,9 @@ export async function loadTmdbTitles(
   search: string,
   services: string[],
   maxDurationMinutes?: number,
+  page = 1,
 ): Promise<CatalogMediaItem[]> {
-  const params: Record<string, string> = { language: 'en-US', include_adult: 'false' };
+  const params: Record<string, string> = { language: 'en-US', include_adult: 'false', page: String(Math.max(1, Math.min(50, Math.floor(page)))) };
   if (search) {
     params.query = search;
   } else {
@@ -192,13 +193,13 @@ export function mapGoogleVolume({ id, volumeInfo }: GoogleVolume): CatalogMediaI
   };
 }
 
-export async function loadGoogleBooks(query: string): Promise<CatalogMediaItem[]> {
+export async function loadGoogleBooks(query: string, page = 1): Promise<CatalogMediaItem[]> {
   const key = process.env.GOOGLE_BOOKS_API_KEY;
   if (!key) throw new Error('GOOGLE_BOOKS_API_KEY is missing');
-  return cachedCatalogRequest(`books:${query.toLowerCase()}`, LIST_TTL, async () => {
+  return cachedCatalogRequest(`books:${query.toLowerCase()}:${page}`, LIST_TTL, async () => {
     const url = new URL('https://www.googleapis.com/books/v1/volumes');
     url.search = new URLSearchParams({
-      q: query, key, maxResults: '20', printType: 'books', langRestrict: 'en',
+      q: query, key, maxResults: '20', startIndex: String((Math.max(1, Math.min(50, Math.floor(page))) - 1) * 20), printType: 'books', langRestrict: 'en',
     }).toString();
     const data = await getJson<{ items?: GoogleVolume[] }>(url);
     return (data.items ?? []).map(mapGoogleVolume).filter((item): item is CatalogMediaItem => !!item);
