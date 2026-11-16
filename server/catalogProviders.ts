@@ -122,7 +122,7 @@ export async function loadTmdbTitles(
   maxDurationMinutes?: number,
   page = 1,
 ): Promise<CatalogMediaItem[]> {
-  const params: Record<string, string> = { language: 'en-US', include_adult: 'false', page: String(Math.max(1, Math.min(50, Math.floor(page)))) };
+  const params: Record<string, string> = { language: 'en-US', include_adult: 'false', page: String(Math.max(1, Math.min(500, Math.floor(page)))) };
   if (search) {
     params.query = search;
   } else {
