@@ -345,9 +345,12 @@ apiRouter.post('/swipe-deck', async (req: Request, res: Response) => {
     const deckSeed = typeof req.body.deckSeed === 'number' && Number.isFinite(req.body.deckSeed)
       ? req.body.deckSeed
       : 1;
+    const page = typeof req.body.page === 'number' && Number.isFinite(req.body.page)
+      ? Math.max(1, Math.min(50, Math.floor(req.body.page))) : 1;
     const catalog = await loadCatalog({
       formats: [mediaType],
       preferredGenres: effectiveTasteProfile?.preferredGenres,
+      page,
     });
     const deck = rankSwipeDeck(
       catalog.filter((item) => !excludedMediaIds.includes(item.id)),
