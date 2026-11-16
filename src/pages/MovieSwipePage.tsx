@@ -16,6 +16,8 @@ const deckSeedsKey = 'plot-twist:swipe-deck-seeds:v1';
 const lastCatalogPageFor = (format: MediaType) => format === 'podcast' ? 50 : 500;
 const reviewCycleKey = 'plot-twist:reviewed-swipe-cycle:v1';
 const pagesPerLoad = 4;
+const refillThreshold = 8;
+const posterLookahead = 4;
 const deckPagesKey = 'plot-twist:swipe-deck-pages:v1';
 
 interface SwipeTasteSignals {
@@ -60,6 +62,8 @@ export const MovieSwipePage: React.FC = () => {
   const [swipeHistory, setSwipeHistory] = useState<SwipeDecisionRecord[]>([]);
   const [tasteSignals, setTasteSignals] = useState<SwipeTasteSignals | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [canLoadMore, setCanLoadMore] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [savingDecision, setSavingDecision] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
@@ -79,6 +83,7 @@ export const MovieSwipePage: React.FC = () => {
   const currentMedia = deck[0];
   const nextMedia = deck[1];
   const undoAvailable = activeSwipes(swipeHistory).length > 0;
+  const waitingForMore = loadingMore || canLoadMore || savingDecision;
 
   const deckSeedFor = useCallback((format: MediaType) => {
     const savedSeed = deckSeedsRef.current[format];
@@ -96,24 +101,27 @@ export const MovieSwipePage: React.FC = () => {
     history: SwipeDecisionRecord[],
     startPage: number,
     requestId: number,
+    queuedIds: string[] = [],
   ) => {
     const activeHistory = activeSwipes(history);
     const excludedMediaIds = activeHistory
       .filter((record) => record.mediaType === mediaType && !(reviewCycleRef.current[`${user?.uid ?? 'anonymous'}:${mediaType}`] ?? []).includes(`${record.id}:${record.createdAt}`))
       .map((record) => record.mediaId);
+    const excludedIds = new Set([...excludedMediaIds, ...queuedIds]);
     let tasteSignals: SwipeTasteSignals | undefined;
     const lastPage = Math.min(lastCatalogPageFor(mediaType), startPage + pagesPerLoad - 1);
 
     for (let page = startPage; page <= lastPage; page += 1) {
       const res = await fetch('/api/swipe-deck', {
         method: 'POST',
+        signal: AbortSignal.timeout(15000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mediaType,
           deckSeed: deckSeedFor(mediaType),
           page,
           tasteProfile: userProfile?.tasteProfile,
-          excludedMediaIds,
+          excludedMediaIds: [...excludedIds],
           swipeHistory: activeHistory,
         }),
       });
@@ -121,7 +129,7 @@ export const MovieSwipePage: React.FC = () => {
       const data = await res.json() as Partial<SwipeDeckResponse>;
       if (requestId !== requestIdRef.current) return;
       tasteSignals = data.tasteSignals;
-      const deck = Array.isArray(data.deck) ? data.deck : [];
+      const deck = Array.isArray(data.deck) ? data.deck.filter((card) => !excludedIds.has(card.id)) : [];
 
       deckPagesRef.current = { ...deckPagesRef.current, [mediaType]: page };
       writeSessionValue(deckPagesKey, deckPagesRef.current);
@@ -134,6 +142,8 @@ export const MovieSwipePage: React.FC = () => {
     const requestId = ++requestIdRef.current;
     const previousPage = deckPagesRef.current[mediaType] ?? 1;
     setLoading(true);
+    setLoadingMore(false);
+    setCanLoadMore(false);
     setLoadError(false);
     setStatusNotice(null);
     try {
@@ -151,6 +161,7 @@ export const MovieSwipePage: React.FC = () => {
       if (!response || requestId !== requestIdRef.current) return;
       setSwipeHistory(records);
       setDeck(response.deck);
+      setCanLoadMore(response.deck.length > 0);
       setTasteSignals(response.tasteSignals ?? null);
     } catch (error) {
       if (requestId !== requestIdRef.current) return;
@@ -168,13 +179,54 @@ export const MovieSwipePage: React.FC = () => {
     return () => { requestIdRef.current += 1; };
   }, [loadDeck]);
 
+  useEffect(() => {
+    if (loading || loadingMore || !canLoadMore || deck.length > refillThreshold) return;
+    if (deck[0] && deck[0].mediaType !== mediaType) return;
+
+    const requestId = requestIdRef.current;
+    const startPage = (deckPagesRef.current[mediaType] ?? 1) + 1;
+    setLoadingMore(true);
+    void requestDeck(swipeHistory, startPage, requestId, deck.map((card) => card.id))
+      .then((response) => {
+        if (!response || requestId !== requestIdRef.current) return;
+        setCanLoadMore(response.deck.length > 0);
+        if (response.deck.length) {
+          setDeck((currentDeck) => {
+            const queuedIds = new Set(currentDeck.map((card) => card.id));
+            return [...currentDeck, ...response.deck.filter((card) => !queuedIds.has(card.id))];
+          });
+        }
+        if (response.tasteSignals) setTasteSignals(response.tasteSignals);
+      })
+      .catch((error) => {
+        if (requestId !== requestIdRef.current) return;
+        console.error('Failed to load more swipe cards:', error);
+        setCanLoadMore(false);
+        setLoadError(true);
+      })
+      .finally(() => {
+        if (requestId === requestIdRef.current) setLoadingMore(false);
+      });
+  }, [canLoadMore, deck, loading, loadingMore, mediaType, requestDeck, swipeHistory]);
+
+  useEffect(() => {
+    for (const card of deck.slice(2, posterLookahead + 2)) {
+      if (!card.posterUrl) continue;
+      const poster = new Image();
+      poster.src = card.posterUrl;
+    }
+  }, [deck]);
+
   const refreshWithHistory = useCallback(async (nextHistory: SwipeDecisionRecord[]) => {
     const requestId = ++requestIdRef.current;
+    setLoadingMore(false);
+    setCanLoadMore(false);
     try {
       const response = await requestDeck(nextHistory, deckPagesRef.current[mediaType] ?? 1, requestId);
       if (!response || requestId !== requestIdRef.current) return false;
       setLoadError(false);
       setDeck(response.deck);
+      setCanLoadMore(response.deck.length > 0);
       setTasteSignals(response.tasteSignals ?? null);
       return true;
     } catch (error) {
@@ -219,8 +271,7 @@ export const MovieSwipePage: React.FC = () => {
       setSwipeHistory(nextHistory);
       lastSwipedCardRef.current = currentMedia;
       setDeck((currentDeck) => currentDeck.slice(1));
-      const refreshed = deck.length > 1 || await refreshWithHistory(nextHistory);
-      if (refreshed) setStatusNotice(
+      setStatusNotice(
         user
           ? decision === 'interested'
             ? `Saved ${currentMedia.title} to ${formatOptions.find((item) => item.value === currentMedia.mediaType)?.libraryLabel}.`
@@ -233,7 +284,7 @@ export const MovieSwipePage: React.FC = () => {
     } finally {
       setSavingDecision(false);
     }
-  }, [currentMedia, deck.length, refreshWithHistory, savingDecision, swipeHistory, user]);
+  }, [currentMedia, savingDecision, swipeHistory, user]);
 
   const handleUndo = useCallback(async () => {
     if (!undoAvailable || savingDecision) return;
@@ -332,15 +383,17 @@ export const MovieSwipePage: React.FC = () => {
         </div>
       )}
 
-      {!loading && !savingDecision && !currentMedia && loadError && (
+      {!loading && !waitingForMore && !currentMedia && loadError && (
         <button type="button" onClick={() => void loadDeck()} className="px-6 py-3 bg-[#D9B66F] text-[#091A2B] font-bold text-xs uppercase tracking-wider rounded-xl">Try Again</button>
       )}
 
-      {!loading && savingDecision && !currentMedia && (
-        <p role="status" className="text-sm text-[#F7F2E9]/70">Finding more titles…</p>
+      {!loading && waitingForMore && !currentMedia && (
+        <div className="w-full max-w-sm h-[520px] rounded-3xl bg-[#10283F]/30 border border-[#10283F] flex items-center justify-center">
+          <p role="status" className="text-sm text-[#F7F2E9]/70">Finding more titles…</p>
+        </div>
       )}
 
-      {!loading && !savingDecision && !currentMedia && !loadError && (
+      {!loading && !waitingForMore && !currentMedia && !loadError && (
         <div className="w-full max-w-md p-10 bg-[#10283F]/30 border border-[#10283F] rounded-3xl text-center space-y-5">
           <CheckCircle2 className="w-12 h-12 text-[#D9B66F] mx-auto" />
           <h2 className="text-2xl font-serif font-bold text-[#F7F2E9]">No new titles in this batch</h2>
