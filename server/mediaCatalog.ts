@@ -370,6 +370,7 @@ export interface LiveCatalogOptions extends CatalogFilters {
   search?: string;
   preferredGenres?: string[];
   mood?: MoodSettings;
+  page?: number;
 }
 
 const formats: MediaType[] = ['movie', 'tv', 'book', 'podcast'];
@@ -379,6 +380,7 @@ export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<Cat
     ? formats.filter((format) => options.formats?.includes(format))
     : formats;
   const search = options.search?.trim().slice(0, 100) ?? '';
+  const page = Number.isFinite(options.page) ? Math.max(1, Math.min(50, Math.floor(options.page!))) : 1;
   const preferredGenre = options.preferredGenres?.find((genre) => typeof genre === 'string' && genre.trim())
     ?.trim().slice(0, 50);
   const bookGenre = preferredGenre || (options.mood && options.mood.romance >= 4 ? 'romance'
@@ -386,9 +388,10 @@ export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<Cat
 
   const batches = await Promise.all(selected.map(async (format): Promise<CatalogMediaItem[]> => {
     try {
-      if (format === 'book') return await loadGoogleBooks(search || `subject:${bookGenre}`);
+      if (format === 'book') return await loadGoogleBooks(search || `subject:${bookGenre}`, page);
       if (format === 'podcast') {
-        const terms = search ? [search] : preferredGenre ? [preferredGenre] : [];
+        const discoveryTerms = ['mystery', 'comedy', 'history', 'science', 'culture', 'fiction', 'true crime', 'music', 'technology', 'interviews'];
+        const terms = search ? [search] : page > 1 ? [discoveryTerms[(page - 2) % discoveryTerms.length]] : preferredGenre ? [preferredGenre] : [];
         const podcasts = await cachedCatalogRequest(`podcasts:${terms.join('|').toLowerCase()}`, 30 * 60_000,
           () => getPodcastCandidates({ terms, max: 16 }));
         const marked = podcasts.map((item): CatalogMediaItem => ({
@@ -411,7 +414,7 @@ export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<Cat
         return VERIFIED_CATALOG.filter((item) => item.mediaType === 'podcast')
           .map((item) => ({ ...item, catalogOrigin: 'fallback' }));
       }
-      const titles = await loadTmdbTitles(format, search, options.streamingServices ?? [], options.maxDurationMinutes);
+      const titles = await loadTmdbTitles(format, search, options.streamingServices ?? [], options.maxDurationMinutes, page);
       return titles.map((title) => {
         const fallback = VERIFIED_CATALOG.find((item) => item.mediaType === format && item.catalogId === title.catalogId);
         return fallback ? { ...title, id: fallback.id } : title;
