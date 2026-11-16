@@ -375,6 +375,14 @@ export interface LiveCatalogOptions extends CatalogFilters {
 
 const formats: MediaType[] = ['movie', 'tv', 'book', 'podcast'];
 
+const bookDiscoverySubjects = ['fiction', 'mystery', 'romance', 'fantasy', 'science fiction', 'thriller', 'historical fiction', 'literary fiction', 'adventure', 'horror', 'contemporary fiction', 'short stories', 'comedy', 'biography', 'memoir', 'history', 'science', 'psychology', 'nature', 'travel', 'art', 'poetry', 'drama', 'philosophy', 'graphic novels'];
+
+export function bookDiscoveryPage(page: number, preferredGenre: string) {
+  if (page <= 1) return { subject: preferredGenre, providerPage: 1 };
+  const offset = page - 2;
+  return { subject: bookDiscoverySubjects[offset % bookDiscoverySubjects.length], providerPage: Math.floor(offset / bookDiscoverySubjects.length) + 1 };
+}
+
 export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<CatalogMediaItem[]> {
   const selected = options.formats?.length
     ? formats.filter((format) => options.formats?.includes(format))
@@ -388,7 +396,11 @@ export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<Cat
 
   const batches = await Promise.all(selected.map(async (format): Promise<CatalogMediaItem[]> => {
     try {
-      if (format === 'book') return await loadGoogleBooks(search || `subject:${bookGenre}`, page);
+      if (format === 'book') {
+        if (search) return await loadGoogleBooks(search, page);
+        const bookPage = bookDiscoveryPage(page, bookGenre);
+        return await loadGoogleBooks(`subject:${bookPage.subject}`, bookPage.providerPage);
+      }
       if (format === 'podcast') {
         const discoveryTerms = ['mystery', 'comedy', 'history', 'science', 'culture', 'fiction', 'true crime', 'music', 'technology', 'interviews', 'books', 'films', 'television', 'storytelling', 'education', 'art', 'design', 'nature', 'travel', 'food', 'society', 'wellness', 'sports', 'news', 'business', 'biography', 'drama', 'fantasy', 'horror', 'adventure', 'romance', 'thriller', 'family', 'languages', 'literature', 'philosophy', 'psychology', 'astronomy', 'medicine', 'environment', 'games', 'relationships', 'inventions', 'documentary', 'classical music', 'personal stories', 'science fiction', 'journalism', 'theater'];
         const terms = search ? [search] : page > 1 ? [discoveryTerms[(page - 2) % discoveryTerms.length]] : preferredGenre ? [preferredGenre] : [];
