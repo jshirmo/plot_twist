@@ -3,15 +3,6 @@ import { CatalogMediaItem, loadCatalog } from './mediaCatalog';
 import type { CatalogDisplayMetadata, MoodSettings, RecommendationRatingFeedback, TasteProfile } from '../src/types';
 import { excludeDislikedTitles, ratingGenreSignals } from './ratingFeedback';
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
-
 export interface RecommendationResult extends CatalogDisplayMetadata {
   catalogId: string;
   id: string;
@@ -230,8 +221,9 @@ Return strictly a JSON object with:
 - confidence: number (0-100)
 If the image does not show a recognizable media title, set confidence below 40.`;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash',
+  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout: 12000 } });
+  const generate = (model: string) => client.models.generateContent({
+    model,
     contents: {
       parts: [
         {
@@ -260,5 +252,13 @@ If the image does not show a recognizable media title, set confidence below 40.`
     },
   });
 
+  let response;
+  try {
+    response = await generate('gemini-3.5-flash-lite');
+  } catch (error) {
+    const status = typeof error === 'object' && error !== null && 'status' in error && typeof error.status === 'number' ? error.status : 0;
+    if (status !== 503) throw error;
+    response = await generate('gemini-3.8-flash');
+  }
   return JSON.parse(response.text || '{}');
 }
