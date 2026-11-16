@@ -57,11 +57,13 @@ export const MovieSwipePage: React.FC = () => {
   const [swipeHistory, setSwipeHistory] = useState<SwipeDecisionRecord[]>([]);
   const [tasteSignals, setTasteSignals] = useState<SwipeTasteSignals | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [savingDecision, setSavingDecision] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const sessionHistoryRef = useRef<SwipeDecisionRecord[]>(readSessionValue(anonymousHistoryKey, []));
   const deckSeedsRef = useRef<Partial<Record<MediaType, number>>>(readSessionValue(deckSeedsKey, {}));
   const deckPagesRef = useRef<Partial<Record<MediaType, number>>>(readSessionValue(deckPagesKey, {}));
+  const requestIdRef = useRef(0);
 
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-200, 200], [-18, 18]);
@@ -110,7 +112,10 @@ export const MovieSwipePage: React.FC = () => {
   }, [deckSeedFor, mediaType, userProfile?.tasteProfile]);
 
   const loadDeck = useCallback(async (restart = false) => {
+    const requestId = ++requestIdRef.current;
+    const previousPage = deckPagesRef.current[mediaType] ?? 1;
     setLoading(true);
+    setLoadError(false);
     setStatusNotice(null);
     try {
       let records = sessionHistoryRef.current;
@@ -122,31 +127,44 @@ export const MovieSwipePage: React.FC = () => {
         delete deckSeedsRef.current[mediaType];
       }
       const response = await requestDeck(records);
+      if (requestId !== requestIdRef.current) return;
       setSwipeHistory(records);
       setDeck(response.deck);
       setTasteSignals(response.tasteSignals ?? null);
     } catch (error) {
+      if (requestId !== requestIdRef.current) return;
+      if (restart) {
+        deckPagesRef.current = { ...deckPagesRef.current, [mediaType]: previousPage };
+        writeSessionValue(deckPagesKey, deckPagesRef.current);
+      }
       console.error('Failed to load swipe deck:', error);
-      setSwipeHistory([]);
       setDeck([]);
-      setStatusNotice('Failed to load this deck. Please refresh and try again.');
+      setLoadError(true);
+      setStatusNotice('Could not load this deck. Please try again.');
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }, [mediaType, requestDeck, user]);
 
   useEffect(() => {
     void loadDeck();
+    return () => { requestIdRef.current += 1; };
   }, [loadDeck]);
 
   const refreshWithHistory = useCallback(async (nextHistory: SwipeDecisionRecord[]) => {
+    const requestId = ++requestIdRef.current;
     try {
       const response = await requestDeck(nextHistory);
+      if (requestId !== requestIdRef.current) return;
+      setLoadError(false);
       setDeck(response.deck);
       setTasteSignals(response.tasteSignals ?? null);
     } catch (error) {
+      if (requestId !== requestIdRef.current) return;
       console.error('Failed to refresh swipe deck:', error);
-      setStatusNotice('Your swipe was saved, but the next deck could not load. Refresh to continue.');
+      setLoadError(true);
+      setDeck([]);
+      setStatusNotice('Your swipe was saved, but the next deck could not load. Please try again.');
     }
   }, [requestDeck]);
 
@@ -287,7 +305,11 @@ export const MovieSwipePage: React.FC = () => {
         </div>
       )}
 
-      {!loading && !currentMedia && (
+      {!loading && !currentMedia && loadError && (
+        <button type="button" onClick={() => void loadDeck()} className="px-6 py-3 bg-[#D9B66F] text-[#091A2B] font-bold text-xs uppercase tracking-wider rounded-xl">Try Again</button>
+      )}
+
+      {!loading && !currentMedia && !loadError && (
         <div className="w-full max-w-md p-10 bg-[#10283F]/30 border border-[#10283F] rounded-3xl text-center space-y-5">
           <CheckCircle2 className="w-12 h-12 text-[#D9B66F] mx-auto" />
           <h2 className="text-2xl font-serif font-bold text-[#F7F2E9]">No new titles in this batch</h2>
