@@ -13,7 +13,8 @@ const formatOptions: Array<{ value: MediaType; label: string; libraryLabel: stri
 ];
 const anonymousHistoryKey = 'plot-twist:anonymous-swipe-history:v1';
 const deckSeedsKey = 'plot-twist:swipe-deck-seeds:v1';
-const lastCatalogPage = 50;
+const lastCatalogPageFor = (format: MediaType) => format === 'movie' || format === 'tv' ? 500 : 50;
+const reviewCycleKey = 'plot-twist:reviewed-swipe-cycle:v1';
 const pagesPerLoad = 4;
 const deckPagesKey = 'plot-twist:swipe-deck-pages:v1';
 
@@ -67,6 +68,7 @@ export const MovieSwipePage: React.FC = () => {
   const deckPagesRef = useRef<Partial<Record<MediaType, number>>>(readSessionValue(deckPagesKey, {}));
   const requestIdRef = useRef(0);
   const lastSwipedCardRef = useRef<MovieSwipeCard | null>(null);
+  const reviewCycleRef = useRef<Record<string, string[]>>(readSessionValue(reviewCycleKey, {}));
 
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-200, 200], [-18, 18]);
@@ -97,10 +99,10 @@ export const MovieSwipePage: React.FC = () => {
   ) => {
     const activeHistory = activeSwipes(history);
     const excludedMediaIds = activeHistory
-      .filter((record) => record.mediaType === mediaType)
+      .filter((record) => record.mediaType === mediaType && !(reviewCycleRef.current[`${user?.uid ?? 'anonymous'}:${mediaType}`] ?? []).includes(`${record.id}:${record.createdAt}`))
       .map((record) => record.mediaId);
     let tasteSignals: SwipeTasteSignals | undefined;
-    const lastPage = Math.min(lastCatalogPage, startPage + pagesPerLoad - 1);
+    const lastPage = Math.min(lastCatalogPageFor(mediaType), startPage + pagesPerLoad - 1);
 
     for (let page = startPage; page <= lastPage; page += 1) {
       const res = await fetch('/api/swipe-deck', {
@@ -126,9 +128,9 @@ export const MovieSwipePage: React.FC = () => {
       if (deck.length) return { deck, tasteSignals };
     }
     return { deck: [], tasteSignals };
-  }, [deckSeedFor, mediaType, userProfile?.tasteProfile]);
+  }, [deckSeedFor, mediaType, user?.uid, userProfile?.tasteProfile]);
 
-  const loadDeck = useCallback(async (restart = false) => {
+  const loadDeck = useCallback(async (restart = false, revisit = false) => {
     const requestId = ++requestIdRef.current;
     const previousPage = deckPagesRef.current[mediaType] ?? 1;
     setLoading(true);
@@ -138,7 +140,13 @@ export const MovieSwipePage: React.FC = () => {
       let records = sessionHistoryRef.current;
       if (user) records = await getUserSwipeHistory(user.uid);
       if (requestId !== requestIdRef.current) return;
-      const startPage = restart ? Math.min(lastCatalogPage, previousPage + 1) : previousPage;
+      if (revisit) {
+        const cycleId = `${user?.uid ?? 'anonymous'}:${mediaType}`;
+        reviewCycleRef.current = { ...reviewCycleRef.current, [cycleId]: activeSwipes(records).filter((record) => record.mediaType === mediaType).map((record) => `${record.id}:${record.createdAt}`) };
+        writeSessionValue(reviewCycleKey, reviewCycleRef.current);
+        delete deckSeedsRef.current[mediaType];
+      }
+      const startPage = revisit ? 1 : restart ? Math.min(lastCatalogPageFor(mediaType), previousPage + 1) : previousPage;
       const response = await requestDeck(records, startPage, requestId);
       if (!response || requestId !== requestIdRef.current) return;
       setSwipeHistory(records);
@@ -336,9 +344,10 @@ export const MovieSwipePage: React.FC = () => {
         <div className="w-full max-w-md p-10 bg-[#10283F]/30 border border-[#10283F] rounded-3xl text-center space-y-5">
           <CheckCircle2 className="w-12 h-12 text-[#D9B66F] mx-auto" />
           <h2 className="text-2xl font-serif font-bold text-[#F7F2E9]">No new titles in this batch</h2>
-          <p className="text-sm text-[#F7F2E9]/70">Refresh to look for more. Previously swiped titles stay in your history.</p>
+          <p className="text-sm text-[#F7F2E9]/70">Look for more titles or revisit earlier ones. Swiping again updates your previous choice.</p>
           <div className="pt-2 flex flex-col sm:flex-row gap-3 justify-center">
             <button onClick={() => void loadDeck(true)} className="px-6 py-3 bg-[#D9B66F] text-[#091A2B] font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-[#D9B66F]/90 transition-all">Refresh Deck</button>
+            <button onClick={() => void loadDeck(false, true)} className="px-6 py-3 bg-[#10283F] text-[#F7F2E9] border border-[#D9B66F]/40 font-semibold text-xs uppercase tracking-wider rounded-xl">Revisit earlier titles</button>
             {undoAvailable && <button onClick={() => void handleUndo()} className="px-6 py-3 bg-[#10283F] text-[#F7F2E9] border border-[#10283F] font-semibold text-xs uppercase tracking-wider rounded-xl hover:border-[#D9B66F]">Undo Last Swipe</button>}
           </div>
         </div>

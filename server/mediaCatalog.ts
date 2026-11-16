@@ -380,7 +380,7 @@ export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<Cat
     ? formats.filter((format) => options.formats?.includes(format))
     : formats;
   const search = options.search?.trim().slice(0, 100) ?? '';
-  const page = Number.isFinite(options.page) ? Math.max(1, Math.min(50, Math.floor(options.page!))) : 1;
+  const page = Number.isFinite(options.page) ? Math.max(1, Math.min(500, Math.floor(options.page!))) : 1;
   const preferredGenre = options.preferredGenres?.find((genre) => typeof genre === 'string' && genre.trim())
     ?.trim().slice(0, 50);
   const bookGenre = preferredGenre || (options.mood && options.mood.romance >= 4 ? 'romance'
@@ -390,7 +390,7 @@ export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<Cat
     try {
       if (format === 'book') return await loadGoogleBooks(search || `subject:${bookGenre}`, page);
       if (format === 'podcast') {
-        const discoveryTerms = ['mystery', 'comedy', 'history', 'science', 'culture', 'fiction', 'true crime', 'music', 'technology', 'interviews'];
+        const discoveryTerms = ['mystery', 'comedy', 'history', 'science', 'culture', 'fiction', 'true crime', 'music', 'technology', 'interviews', 'books', 'films', 'television', 'storytelling', 'education', 'art', 'design', 'nature', 'travel', 'food', 'society', 'wellness', 'sports', 'news', 'business', 'biography', 'drama', 'fantasy', 'horror', 'adventure', 'romance', 'thriller', 'family', 'languages', 'literature', 'philosophy', 'psychology', 'astronomy', 'medicine', 'environment', 'games', 'relationships', 'inventions', 'documentary', 'classical music', 'personal stories', 'science fiction', 'journalism', 'theater'];
         const terms = search ? [search] : page > 1 ? [discoveryTerms[(page - 2) % discoveryTerms.length]] : preferredGenre ? [preferredGenre] : [];
         const podcasts = await cachedCatalogRequest(`podcasts:${terms.join('|').toLowerCase()}`, 30 * 60_000,
           () => getPodcastCandidates({ terms, max: 16 }));
