@@ -76,9 +76,9 @@ function formatEventDate(date: string, time?: string): string {
   return `${day} · ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  const data = await res.json().catch(() => ({}));
+async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) });
+  const data = await res.json();
   if (!res.ok) throw new Error(data.message || 'Something went wrong. Try again in a minute.');
   return data as T;
 }
@@ -124,21 +124,30 @@ export const NearYouPage: React.FC = () => {
   useEffect(() => {
     if (!place) return;
     const query = placeQuery(place);
+    const controller = new AbortController();
 
     setEvents({ loading: true, error: null, items: [] });
     setEventsFallback(false);
     const podcasts = libraryPodcasts.length ? `&podcasts=${encodeURIComponent(libraryPodcasts.join('|'))}` : '';
-    fetchJson<{ events: LocalEvent[]; fallback?: boolean }>(`/api/local/events?${query}${podcasts}`)
+    fetchJson<{ events: LocalEvent[]; fallback?: boolean }>(`/api/local/events?${query}${podcasts}`, controller.signal)
       .then((d) => {
+        if (controller.signal.aborted) return;
         setEventsFallback(Boolean(d.fallback));
         setEvents({ loading: false, error: null, items: d.events });
       })
-      .catch((e) => setEvents({ loading: false, error: e.message, items: [] }));
+      .catch((e) => {
+        if (!controller.signal.aborted) setEvents({ loading: false, error: e.message, items: [] });
+      });
 
     setBookstores({ loading: true, error: null, items: [] });
-    fetchJson<{ bookstores: Bookstore[] }>(`/api/local/bookstores?${query}`)
-      .then((d) => setBookstores({ loading: false, error: null, items: d.bookstores }))
-      .catch((e) => setBookstores({ loading: false, error: e.message, items: [] }));
+    fetchJson<{ bookstores: Bookstore[] }>(`/api/local/bookstores?${query}`, controller.signal)
+      .then((d) => {
+        if (!controller.signal.aborted) setBookstores({ loading: false, error: null, items: d.bookstores });
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setBookstores({ loading: false, error: e.message, items: [] });
+      });
+    return () => controller.abort();
   }, [place, libraryPodcasts]);
 
   const useMyLocation = () => {

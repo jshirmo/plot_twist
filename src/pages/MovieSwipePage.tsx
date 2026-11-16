@@ -211,7 +211,7 @@ export const MovieSwipePage: React.FC = () => {
       setSwipeHistory(nextHistory);
       lastSwipedCardRef.current = currentMedia;
       setDeck((currentDeck) => currentDeck.slice(1));
-      const refreshed = await refreshWithHistory(nextHistory);
+      const refreshed = deck.length > 1 || await refreshWithHistory(nextHistory);
       if (refreshed) setStatusNotice(
         user
           ? decision === 'interested'
@@ -225,7 +225,7 @@ export const MovieSwipePage: React.FC = () => {
     } finally {
       setSavingDecision(false);
     }
-  }, [currentMedia, refreshWithHistory, savingDecision, swipeHistory, user]);
+  }, [currentMedia, deck.length, refreshWithHistory, savingDecision, swipeHistory, user]);
 
   const handleUndo = useCallback(async () => {
     if (!undoAvailable || savingDecision) return;

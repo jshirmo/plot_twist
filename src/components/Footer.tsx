@@ -29,7 +29,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
               Near You
             </button>
             <button onClick={() => onNavigate('swipe')} className="hover:text-[#F7F2E9] transition-colors cursor-pointer">
-              Movie Swipe
+              Swipe
             </button>
             <button onClick={() => onNavigate('library')} className="hover:text-[#F7F2E9] transition-colors cursor-pointer">
               My Library

@@ -16,7 +16,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenO
     { id: 'home', label: 'Home', icon: Film },
     { id: 'discover', label: 'Discover', icon: Compass },
     { id: 'near-you', label: 'Near You', icon: MapPin },
-    { id: 'swipe', label: 'Movie Swipe', icon: Layers },
+    { id: 'swipe', label: 'Swipe', icon: Layers },
     { id: 'library', label: 'My Library', icon: Bookmark },
     { id: 'groups', label: 'Groups', icon: Users },
     { id: 'scan', label: 'Scan', icon: Camera },
@@ -30,20 +30,20 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenO
   return (
     <header className="sticky top-0 z-40 bg-[#091A2B]/95 backdrop-blur-md border-b border-[#10283F]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16 gap-8">
+        <div className="flex items-center justify-between h-16 gap-2 xl:gap-6">
           {/* Zone 1: Brand Wordmark */}
           <button
             onClick={() => handleNavClick('home')}
             className="flex items-center gap-2 text-left shrink-0 cursor-pointer group"
           >
-            <span className="text-2xl font-serif font-bold tracking-tight text-[#F7F2E9] group-hover:text-[#D9B66F] transition-colors">
+            <span className="text-xl sm:text-2xl font-serif font-bold tracking-tight text-[#F7F2E9] group-hover:text-[#D9B66F] transition-colors">
               PLOT TWIST
             </span>
             <span className="w-1.5 h-1.5 rounded-full bg-[#D9B66F]" aria-hidden="true" />
           </button>
 
           {/* Zone 2: Navigation Links (Desktop) */}
-          <nav className="hidden xl:flex items-center gap-6 text-sm font-medium">
+          <nav className="hidden xl:flex items-center gap-3 2xl:gap-6 text-sm font-medium">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
@@ -65,7 +65,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenO
           </nav>
 
           {/* Zone 3: Primary Action / User Profile */}
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-1 sm:gap-3 shrink-0">
             {user ? (
               <div className="flex items-center gap-3">
                 <button
@@ -103,10 +103,10 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenO
             ) : (
               <button
                 onClick={() => signIn()}
-                className="flex items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-[#091A2B] bg-[#D9B66F] hover:bg-[#D9B66F]/90 rounded-lg shadow-sm transition-colors whitespace-nowrap cursor-pointer"
+                className="flex items-center gap-1 px-2 sm:gap-2 sm:px-4 py-2 text-xs font-semibold uppercase tracking-wider text-[#091A2B] bg-[#D9B66F] hover:bg-[#D9B66F]/90 rounded-lg shadow-sm transition-colors whitespace-nowrap cursor-pointer"
               >
                 <LogIn className="w-4 h-4" />
-                <span>Sign In with Google</span>
+                <span>Sign In<span className="hidden sm:inline"> with Google</span></span>
               </button>
             )}
 
@@ -115,6 +115,7 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, onOpenO
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               className="xl:hidden p-2 text-[#F7F2E9]/80 hover:text-[#F7F2E9] hover:bg-[#10283F] rounded-md"
               aria-label="Toggle navigation menu"
+              aria-expanded={mobileMenuOpen}
             >
               {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
             </button>
