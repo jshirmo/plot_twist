@@ -159,12 +159,14 @@ export const MovieSwipePage: React.FC = () => {
       setLoadError(false);
       setDeck(response.deck);
       setTasteSignals(response.tasteSignals ?? null);
+      return true;
     } catch (error) {
-      if (requestId !== requestIdRef.current) return;
+      if (requestId !== requestIdRef.current) return false;
       console.error('Failed to refresh swipe deck:', error);
       setLoadError(true);
       setDeck([]);
       setStatusNotice('Your swipe was saved, but the next deck could not load. Please try again.');
+      return false;
     }
   }, [requestDeck]);
 
@@ -199,8 +201,8 @@ export const MovieSwipePage: React.FC = () => {
       }
       setSwipeHistory(nextHistory);
       setDeck((currentDeck) => currentDeck.slice(1));
-      await refreshWithHistory(nextHistory);
-      setStatusNotice(
+      const refreshed = await refreshWithHistory(nextHistory);
+      if (refreshed) setStatusNotice(
         user
           ? decision === 'interested'
             ? `Saved ${currentMedia.title} to ${formatOptions.find((item) => item.value === currentMedia.mediaType)?.libraryLabel}.`
@@ -235,8 +237,8 @@ export const MovieSwipePage: React.FC = () => {
         writeSessionValue(anonymousHistoryKey, nextHistory);
       }
       setSwipeHistory(nextHistory);
-      await refreshWithHistory(nextHistory);
-      setStatusNotice(`Reversed last swipe on ${reversed.title}.`);
+      const refreshed = await refreshWithHistory(nextHistory);
+      if (refreshed) setStatusNotice(`Reversed last swipe on ${reversed.title}.`);
     } catch (error) {
       console.error('Error undoing swipe:', error);
       setStatusNotice('We could not undo that swipe. Please try again.');
