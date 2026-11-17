@@ -121,12 +121,15 @@ export async function loadTmdbTitles(
   services: string[],
   maxDurationMinutes?: number,
   page = 1,
+  withGenres?: string,
 ): Promise<CatalogMediaItem[]> {
   const params: Record<string, string> = { language: 'en-US', include_adult: 'false', page: String(Math.max(1, Math.min(500, Math.floor(page)))) };
   if (search) {
     params.query = search;
   } else {
     params.sort_by = 'popularity.desc';
+    // Mood-driven genre filter, e.g. "10749" (Romance) or "53|9648|80" (Thriller, Mystery, Crime).
+    if (withGenres && /^\d+(\|\d+)*$/.test(withGenres)) params.with_genres = withGenres;
     if (maxDurationMinutes) params['with_runtime.lte'] = String(maxDurationMinutes);
     if (services.length) {
       const { results } = await tmdb<{ results: WatchProvider[] }>(

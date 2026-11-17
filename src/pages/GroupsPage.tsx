@@ -184,6 +184,7 @@ export const GroupsPage: React.FC = () => {
           tasteProfile: userProfile?.tasteProfile,
           formats: ['movie', 'tv', 'book', 'podcast'],
           ratingFeedback,
+          resultLimit: 6,
           groupId: selectedGroup.id,
         }),
       });

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { generateRecommendations, scanMediaPosterOrCover } from './geminiService';
+import { generateRecommendationPage, scanMediaPosterOrCover } from './geminiService';
 import { parseRatingFeedback } from './ratingFeedback';
 import { loadCatalog, VERIFIED_CATALOG } from './mediaCatalog';
 import { searchPodcasts, getTrendingPodcasts, getPodcastEpisodes, podcastSource } from './podcastService';
@@ -11,7 +11,8 @@ export const apiRouter = Router();
 // Endpoint for AI Recommendations
 apiRouter.post('/recommendations', async (req: Request, res: Response) => {
   try {
-    const { moodSettings, tasteProfile, formats, maxDurationMinutes, streamingServices, excludedMediaIds } = req.body;
+    const { tasteProfile, formats, maxDurationMinutes, streamingServices } = req.body;
+    const moodSettings = readMoodTags(req.body.moodSettings);
 
     if (!moodSettings) {
       return res.status(400).json({ error: 'moodSettings are required' });
@@ -25,7 +26,15 @@ apiRouter.post('/recommendations', async (req: Request, res: Response) => {
     const effectiveTasteProfile = createSwipeAwareTasteProfile(tasteProfile, swipeTaste);
     const inferredFormats = swipeTaste.topFormats.length ? swipeTaste.topFormats : undefined;
 
-    const results = await generateRecommendations({
+    // Titles already shown this session (Shuffle) plus titles the user passed on in Swipe.
+    const excludedMediaIds = [...new Set([
+      ...readIdList(req.body.excludedMediaIds),
+      ...swipeFeedback.filter((swipe) => swipe.decision === 'pass').map((swipe) => swipe.mediaId),
+    ])];
+    const toNumber = (value: unknown) => typeof value === 'number' ? value
+      : typeof value === 'string' && value.trim() ? Number(value) : undefined;
+
+    const { results, catalogPage, nextCatalogPage, ranking } = await generateRecommendationPage({
       moodSettings,
       tasteProfile: effectiveTasteProfile,
       // Explicit filters always win. Inferred formats make a first request dynamic
@@ -35,9 +44,11 @@ apiRouter.post('/recommendations', async (req: Request, res: Response) => {
       streamingServices,
       excludedMediaIds,
       ratingFeedback: parseRatingFeedback(req.body.ratingFeedback),
+      resultLimit: toNumber(req.body.resultLimit),
+      catalogPage: toNumber(req.body.catalogPage),
     });
 
-    return res.json({ results });
+    return res.json({ results, catalogPage, nextCatalogPage, ranking });
   } catch (error) {
     console.error('API /recommendations error:', error);
     return res.status(500).json({ error: 'Failed to generate recommendations' });
@@ -96,6 +107,13 @@ function readMoodTags(value: unknown): MoodSettings | undefined {
     plotTwists === undefined || emotionalIntensity === undefined
     ? undefined
     : { darkness, romance, suspense, plotTwists, emotionalIntensity };
+}
+
+/** A bounded list of catalog ids from the request body. */
+export function readIdList(value: unknown, max = 500): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 200))]
+    .slice(0, max);
 }
 
 function readSwipeFeedback(value: unknown): SwipeFeedback[] {
