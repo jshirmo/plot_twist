@@ -79,6 +79,13 @@ test('Gemini can rank real filtered titles but cannot add titles or replace meta
   assert.match(requestUrl, /gemini-3\.8-flash:generateContent/);
   assert.ok(prompt.includes(allowed.title));
   assert.match(prompt, /Learned From Swipes: Recent swipes favor Mystery in movie\./);
-  assert.deepEqual(results.map(({ id, title }) => ({ id, title })), [{ id: allowed.id, title: allowed.title }]);
-  assert.equal(results[0].compatibilityScore, 95);
+  // Gemini's pick keeps its real catalog metadata and explanation. The other
+  // slots are filled from the same real, filtered catalog, never from the model.
+  const geminiPick = results.find((result) => result.id === allowed.id);
+  assert.ok(geminiPick);
+  assert.equal(geminiPick.title, allowed.title);
+  assert.equal(geminiPick.aiExplanation, 'Matches your mood.');
+  assert.ok(!results.some((result) => result.id === 'invented' || result.id === disliked.id));
+  assert.ok(results.every((result) => VERIFIED_CATALOG.some((item) => item.id === result.id && item.title === result.title)));
+  assert.equal(new Set(results.map((result) => result.id)).size, results.length);
 });

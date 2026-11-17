@@ -383,6 +383,46 @@ export function bookDiscoveryPage(page: number, preferredGenre: string) {
   return { subject: bookDiscoverySubjects[offset % bookDiscoverySubjects.length], providerPage: Math.floor(offset / bookDiscoverySubjects.length) + 1 };
 }
 
+// TMDB genre ids: https://developer.themoviedb.org/reference/genre-movie-list
+const TMDB_MOOD_GENRES = {
+  movie: { romance: [10749], suspense: [53, 9648, 80], dark: [27, 53, 80], light: [35, 10751, 16], intense: [18, 10752] },
+  tv: { romance: [18, 10766], suspense: [9648, 80], dark: [80, 9648], light: [35, 10751, 16], intense: [18] },
+} as const;
+
+/**
+ * When sliders are pushed hard, fetch from the matching corner of the catalog
+ * instead of only the most popular titles. Returns undefined for a neutral mood.
+ */
+export function moodCatalogHints(mood?: MoodSettings) {
+  if (!mood) return undefined;
+  const wants = {
+    romance: mood.romance >= 4,
+    suspense: mood.suspense >= 4 || mood.plotTwists >= 4,
+    dark: mood.darkness >= 5,
+    light: mood.darkness <= 2 && mood.emotionalIntensity <= 3 && mood.suspense <= 3,
+    intense: mood.emotionalIntensity >= 5 && mood.romance < 4 && mood.suspense < 4,
+  };
+  const keys = (Object.keys(wants) as Array<keyof typeof wants>).filter((key) => wants[key]);
+  if (!keys.length) return undefined;
+  const genresFor = (format: 'movie' | 'tv') =>
+    [...new Set(keys.flatMap((key) => TMDB_MOOD_GENRES[format][key]))].join('|');
+  const bookSubjects = [
+    ...(wants.romance ? ['romance', 'love stories'] : []),
+    ...(wants.suspense ? ['thriller', 'mystery', 'psychological fiction', 'crime fiction'] : []),
+    ...(wants.dark ? ['horror', 'noir'] : []),
+    ...(wants.light ? ['humor', 'feel-good fiction'] : []),
+    ...(wants.intense ? ['literary fiction', 'family saga'] : []),
+  ];
+  const podcastTerms = [
+    ...(wants.romance ? ['relationships', 'romance fiction'] : []),
+    ...(wants.suspense ? ['true crime', 'mystery', 'thriller fiction'] : []),
+    ...(wants.dark ? ['horror', 'paranormal'] : []),
+    ...(wants.light ? ['comedy', 'feel good'] : []),
+    ...(wants.intense ? ['personal stories', 'audio drama'] : []),
+  ];
+  return { movieGenres: genresFor('movie'), tvGenres: genresFor('tv'), bookSubjects, podcastTerms };
+}
+
 export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<CatalogMediaItem[]> {
   const selected = options.formats?.length
     ? formats.filter((format) => options.formats?.includes(format))
@@ -393,17 +433,25 @@ export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<Cat
     ?.trim().slice(0, 50);
   const bookGenre = preferredGenre || (options.mood && options.mood.romance >= 4 ? 'romance'
     : options.mood && options.mood.suspense >= 4 ? 'mystery' : 'fiction');
+  const moodHints = search ? undefined : moodCatalogHints(options.mood);
 
   const batches = await Promise.all(selected.map(async (format): Promise<CatalogMediaItem[]> => {
     try {
       if (format === 'book') {
         if (search) return await loadGoogleBooks(search, page);
+        if (moodHints?.bookSubjects.length) {
+          const subjects = moodHints.bookSubjects;
+          const subject = subjects[(page - 1) % subjects.length];
+          return await loadGoogleBooks(`subject:${subject}`, Math.floor((page - 1) / subjects.length) + 1);
+        }
         const bookPage = bookDiscoveryPage(page, bookGenre);
         return await loadGoogleBooks(`subject:${bookPage.subject}`, bookPage.providerPage);
       }
       if (format === 'podcast') {
         const discoveryTerms = ['mystery', 'comedy', 'history', 'science', 'culture', 'fiction', 'true crime', 'music', 'technology', 'interviews', 'books', 'films', 'television', 'storytelling', 'education', 'art', 'design', 'nature', 'travel', 'food', 'society', 'wellness', 'sports', 'news', 'business', 'biography', 'drama', 'fantasy', 'horror', 'adventure', 'romance', 'thriller', 'family', 'languages', 'literature', 'philosophy', 'psychology', 'astronomy', 'medicine', 'environment', 'games', 'relationships', 'inventions', 'documentary', 'classical music', 'personal stories', 'science fiction', 'journalism', 'theater'];
-        const terms = search ? [search] : page > 1 ? [discoveryTerms[(page - 2) % discoveryTerms.length]] : preferredGenre ? [preferredGenre] : [];
+        const terms = search ? [search]
+          : moodHints?.podcastTerms.length ? [moodHints.podcastTerms[(page - 1) % moodHints.podcastTerms.length]]
+          : page > 1 ? [discoveryTerms[(page - 2) % discoveryTerms.length]] : preferredGenre ? [preferredGenre] : [];
         const podcasts = await cachedCatalogRequest(`podcasts:${terms.join('|').toLowerCase()}`, 30 * 60_000,
           () => getPodcastCandidates({ terms, max: 16 }));
         const marked = podcasts.map((item): CatalogMediaItem => ({
@@ -426,7 +474,8 @@ export async function loadCatalog(options: LiveCatalogOptions = {}): Promise<Cat
         return VERIFIED_CATALOG.filter((item) => item.mediaType === 'podcast')
           .map((item) => ({ ...item, catalogOrigin: 'fallback' }));
       }
-      const titles = await loadTmdbTitles(format, search, options.streamingServices ?? [], options.maxDurationMinutes, page);
+      const titles = await loadTmdbTitles(format, search, options.streamingServices ?? [], options.maxDurationMinutes, page,
+        format === 'movie' ? moodHints?.movieGenres : moodHints?.tvGenres);
       return titles.map((title) => {
         const fallback = VERIFIED_CATALOG.find((item) => item.mediaType === format && item.catalogId === title.catalogId);
         return fallback ? { ...title, id: fallback.id } : title;
