@@ -1,10 +1,12 @@
-// Near You: live podcast shows and nearby bookstores. Owner: Chloe.
-// Data comes from /api/local/* (server/localService.ts). Location is only sent with the
-// request and is never saved.
+// Near You / "Stories Come Alive Near You": live events connected to the stories a user
+// loves, plus nearby bookstores. Owner: Chloe.
+// Data comes from /api/local/* (server/localService.ts, server/liveStories.ts). Location and
+// library titles are only sent with the request and are never saved.
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { getUserSavedMedia } from '../lib/mediaService';
+import { getUserSavedMedia, getUserSwipeHistory } from '../lib/mediaService';
+import type { MoodSettings } from '../types';
 import {
   MapPin,
   Navigation,
@@ -13,9 +15,36 @@ import {
   Star,
   ExternalLink,
   Search,
-  Radio,
+  Sparkles,
   AlertCircle,
 } from 'lucide-react';
+
+type EventBadge =
+  | 'Live Podcast' | 'Book Adaptation' | 'Film Adaptation' | 'TV Experience' | 'On Stage' | 'Author Event'
+  | 'Live Reading' | 'Screening' | 'Immersive' | 'Mystery Experience' | 'Comedy';
+
+interface StoryContext {
+  podcasts: string[];
+  books: Array<{ title: string; author?: string }>;
+  movies: string[];
+  shows: string[];
+  genres: string[];
+  mood?: MoodSettings;
+}
+
+const EMPTY_CONTEXT: StoryContext = { podcasts: [], books: [], movies: [], shows: [], genres: [] };
+
+const TABS: Array<{ id: string; label: string; badges?: EventBadge[] }> = [
+  { id: 'all', label: 'All' },
+  { id: 'podcasts', label: 'Podcasts', badges: ['Live Podcast'] },
+  { id: 'books', label: 'Books', badges: ['Book Adaptation', 'Author Event', 'Live Reading'] },
+  { id: 'screenings', label: 'Screenings', badges: ['Screening', 'Film Adaptation', 'TV Experience'] },
+  { id: 'stage', label: 'Stage', badges: ['On Stage'] },
+  { id: 'immersive', label: 'Immersive', badges: ['Immersive', 'Mystery Experience'] },
+];
+
+// Badges that come from a direct library match or an explicit adaptation get the gold style.
+const HIGHLIGHT_BADGES: EventBadge[] = ['Book Adaptation', 'Film Adaptation', 'TV Experience'];
 
 interface LocalEvent {
   id: string;
@@ -31,7 +60,11 @@ interface LocalEvent {
   category?: string;
   priceRange?: string;
   matchedPodcast?: string;
-  kind?: 'podcast' | 'comedy';
+  matchedTitle?: string;
+  kind?: string;
+  badges?: EventBadge[];
+  tier?: 'saved' | 'adaptation' | 'story' | 'taste' | 'comedy';
+  reason?: string;
   moreDates?: number;
 }
 
@@ -57,6 +90,12 @@ interface Section<T> {
 
 const emptySection = <T,>(): Section<T> => ({ loading: false, error: null, items: [] });
 
+function placeBody(place: Place): { lat?: number; lng?: number; city?: string } {
+  // Rounded to about 100 m before it leaves the browser.
+  if ('city' in place) return { city: place.city };
+  return { lat: Number(place.lat.toFixed(3)), lng: Number(place.lng.toFixed(3)) };
+}
+
 function placeQuery(place: Place): string {
   const params = new URLSearchParams();
   if ('city' in place) params.set('city', place.city);
@@ -76,23 +115,25 @@ function formatEventDate(date: string, time?: string): string {
   return `${day} · ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
 }
 
-async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) });
+async function fetchJson<T>(url: string, signal?: AbortSignal, init?: RequestInit): Promise<T> {
+  const timeout = AbortSignal.timeout(20000);
+  const res = await fetch(url, { ...init, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
   const data = await res.json();
   if (!res.ok) throw new Error(data.message || 'Something went wrong. Try again in a minute.');
   return data as T;
 }
 
 export const NearYouPage: React.FC = () => {
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
   const [place, setPlace] = useState<Place | null>(null);
   const [cityInput, setCityInput] = useState('');
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [status, setStatus] = useState<{ events: boolean; bookstores: boolean } | null>(null);
-  const [libraryPodcasts, setLibraryPodcasts] = useState<string[]>([]);
+  const [storyContext, setStoryContext] = useState<StoryContext>(EMPTY_CONTEXT);
   const [events, setEvents] = useState<Section<LocalEvent>>(emptySection());
   const [eventsFallback, setEventsFallback] = useState(false);
+  const [tab, setTab] = useState('all');
   const [bookstores, setBookstores] = useState<Section<Bookstore>>(emptySection());
 
   // Which sources are set up on the server.
@@ -102,23 +143,47 @@ export const NearYouPage: React.FC = () => {
       .catch(() => setStatus({ events: false, bookstores: false }));
   }, []);
 
-  // Podcasts in the user's library, so live shows of those podcasts show first.
+  // What the user loves: saved titles (not passed or disliked), right swipes, preferred
+  // genres, and the average mood of the titles they swiped right on.
   useEffect(() => {
+    const genres = (userProfile?.tasteProfile?.preferredGenres || []).slice(0, 10);
     if (!user) {
-      setLibraryPodcasts([]);
+      setStoryContext({ ...EMPTY_CONTEXT, genres });
       return;
     }
-    getUserSavedMedia(user.uid)
-      .then((items) =>
-        setLibraryPodcasts(
-          (items || [])
-            .filter((i) => i.mediaType === 'podcast' && i.status !== 'passed')
-            .map((i) => i.title)
-            .slice(0, 5)
-        )
-      )
-      .catch(() => setLibraryPodcasts([]));
-  }, [user]);
+    let cancelled = false;
+    Promise.all([
+      getUserSavedMedia(user.uid).catch(() => []),
+      getUserSwipeHistory(user.uid).catch(() => []),
+    ]).then(([saved, swipes]) => {
+      if (cancelled) return;
+      const kept = (saved || []).filter((i) => i.status !== 'passed' && i.rating !== 'disliked');
+      const liked = (swipes || []).filter((s) => s.decision === 'interested' && s.feedbackStatus === 'active');
+      const titles = (type: string) => [...new Set([
+        ...kept.filter((i) => i.mediaType === type).map((i) => i.title),
+        ...liked.filter((s) => s.mediaType === type).map((s) => s.title),
+      ])].slice(0, 15);
+      const books = [
+        ...kept.filter((i) => i.mediaType === 'book').map((i) => ({ title: i.title, author: i.creator })),
+        ...liked.filter((s) => s.mediaType === 'book').map((s) => ({ title: s.title })),
+      ].filter((b, i, all) => all.findIndex((x) => x.title === b.title) === i).slice(0, 15);
+      const moods = liked.map((s) => s.moodTags).filter((m): m is MoodSettings => Boolean(m));
+      const avg = (key: keyof MoodSettings) => Math.round((moods.reduce((sum, m) => sum + m[key], 0) / moods.length) * 10) / 10;
+      setStoryContext({
+        podcasts: titles('podcast'),
+        books,
+        movies: titles('movie'),
+        shows: titles('tv'),
+        genres,
+        mood: moods.length >= 3
+          ? { darkness: avg('darkness'), romance: avg('romance'), suspense: avg('suspense'), plotTwists: avg('plotTwists'), emotionalIntensity: avg('emotionalIntensity') }
+          : undefined,
+      });
+    });
+    return () => { cancelled = true; };
+  }, [user, userProfile]);
+
+  const savedCount = storyContext.podcasts.length + storyContext.books.length + storyContext.movies.length + storyContext.shows.length;
 
   // Load both sections whenever the place changes.
   useEffect(() => {
@@ -128,8 +193,12 @@ export const NearYouPage: React.FC = () => {
 
     setEvents({ loading: true, error: null, items: [] });
     setEventsFallback(false);
-    const podcasts = libraryPodcasts.length ? `&podcasts=${encodeURIComponent(libraryPodcasts.join('|'))}` : '';
-    fetchJson<{ events: LocalEvent[]; fallback?: boolean }>(`/api/local/events?${query}${podcasts}`, controller.signal)
+    setTab('all');
+    fetchJson<{ events: LocalEvent[]; fallback?: boolean }>('/api/local/events', controller.signal, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...placeBody(place), context: storyContext }),
+    })
       .then((d) => {
         if (controller.signal.aborted) return;
         setEventsFallback(Boolean(d.fallback));
@@ -148,7 +217,16 @@ export const NearYouPage: React.FC = () => {
         if (!controller.signal.aborted) setBookstores({ loading: false, error: e.message, items: [] });
       });
     return () => controller.abort();
-  }, [place, libraryPodcasts]);
+  }, [place, storyContext]);
+
+  const tabCounts = useMemo(() => Object.fromEntries(TABS.map((t) => [
+    t.id,
+    t.badges ? events.items.filter((ev) => ev.badges?.some((b) => t.badges!.includes(b))).length : events.items.length,
+  ])), [events.items]);
+  const activeTab = TABS.find((t) => t.id === tab) || TABS[0];
+  const visibleEvents = activeTab.badges
+    ? events.items.filter((ev) => ev.badges?.some((b) => activeTab.badges!.includes(b)))
+    : events.items;
 
   const useMyLocation = () => {
     setLocationError(null);
@@ -182,10 +260,11 @@ export const NearYouPage: React.FC = () => {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
       {/* Header */}
       <div className="border-b border-[#10283F] pb-6 space-y-2">
-        <h1 className="text-3xl font-serif font-bold text-[#F7F2E9]">Near You</h1>
+        <h1 className="text-3xl font-serif font-bold text-[#F7F2E9]">Stories Come Alive Near You</h1>
         <p className="text-sm text-[#F7F2E9]/70 max-w-2xl">
-          Live podcast shows coming to your area and bookstores nearby. Your location is only used for this
-          search and is never saved.
+          See the stories you love come to life: live podcasts, stage adaptations, screenings, author events and
+          immersive experiences near you, plus local bookstores. Your location is only used for this search and is
+          never saved.
         </p>
       </div>
 
@@ -240,10 +319,13 @@ export const NearYouPage: React.FC = () => {
         <div className="py-16 text-center space-y-3">
           <MapPin className="w-10 h-10 text-[#D9B66F] mx-auto" />
           <p className="text-sm text-[#F7F2E9]/70">Share your location or enter a city to see what’s near you.</p>
-          {user && libraryPodcasts.length > 0 && (
+          {user && savedCount > 0 && (
             <p className="text-xs text-[#F7F2E9]/50">
-              We’ll check for live shows from {libraryPodcasts.slice(0, 3).join(', ')}
-              {libraryPodcasts.length > 3 ? ' and more' : ''}.
+              We’ll look for live events connected to{' '}
+              {[...storyContext.podcasts, ...storyContext.books.map((b) => b.title), ...storyContext.movies, ...storyContext.shows]
+                .slice(0, 3)
+                .join(', ')}
+              {savedCount > 3 ? ' and more from your library' : ''}.
             </p>
           )}
         </div>
@@ -253,30 +335,53 @@ export const NearYouPage: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
           {/* Live shows */}
           <section className="lg:col-span-3 space-y-4" aria-labelledby="live-shows-heading">
-            <div className="flex items-baseline justify-between gap-3">
-              <h2 id="live-shows-heading" className="flex items-center gap-2 text-xl font-serif font-bold text-[#F7F2E9]">
-                <Radio className="w-5 h-5 text-[#D9B66F]" /> {eventsFallback ? 'Live comedy shows' : 'Live podcast shows'}
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <h2 id="live-shows-heading" className="flex items-center gap-2 text-xl font-serif font-bold text-[#F7F2E9] whitespace-nowrap">
+                <Sparkles className="w-5 h-5 text-[#D9B66F]" /> Live Plot Twist
               </h2>
               <span className="text-xs text-[#F7F2E9]/50">Near {place.label} · from Ticketmaster</span>
             </div>
 
-            {events.loading && <p className="py-10 text-center text-sm text-[#D9B66F] animate-pulse">Finding live shows…</p>}
+            {!events.loading && !events.error && events.items.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1" role="tablist" aria-label="Event types">
+                {TABS.map((t) => (
+                  <button
+                    key={t.id}
+                    role="tab"
+                    aria-selected={tab === t.id}
+                    onClick={() => setTab(t.id)}
+                    className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
+                      tab === t.id
+                        ? 'bg-[#D9B66F] border-[#D9B66F] text-[#091A2B]'
+                        : 'bg-[#10283F]/40 border-[#10283F] text-[#F7F2E9]/70 hover:border-[#D9B66F]/50'
+                    }`}
+                  >
+                    {t.label} <span className="opacity-70">{tabCounts[t.id] ?? 0}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {events.loading && <p className="py-10 text-center text-sm text-[#D9B66F] animate-pulse">Finding stories near you…</p>}
             {!events.loading && eventsFallback && events.items.length > 0 && (
               <p className="text-sm text-[#F7F2E9]/70 bg-[#10283F]/40 border border-[#10283F] rounded-xl px-4 py-3">
-                No live podcast shows near {place.label} right now, so here are comedy shows nearby instead.
+                No direct story matches nearby right now. Here are live events that fit your Plot Twist taste.
               </p>
             )}
             {events.error && <p className="py-6 text-sm text-[#F7F2E9]/70">{events.error}</p>}
             {!events.loading && !events.error && events.items.length === 0 && (
-              <p className="py-6 text-sm text-[#F7F2E9]/60">No live podcast or comedy shows found nearby right now.</p>
+              <p className="py-6 text-sm text-[#F7F2E9]/60">No live story events found near {place.label} right now.</p>
+            )}
+            {!events.loading && !events.error && events.items.length > 0 && visibleEvents.length === 0 && (
+              <p className="py-6 text-sm text-[#F7F2E9]/60">Nothing in {activeTab.label} near {place.label} right now. Try another tab.</p>
             )}
 
             <div className="space-y-3">
-              {events.items.map((ev) => (
+              {visibleEvents.map((ev) => (
                 <article
                   key={ev.id}
                   className={`flex gap-4 p-4 rounded-xl border ${
-                    ev.matchedPodcast ? 'bg-[#10283F]/60 border-[#D9B66F]/50' : 'bg-[#10283F]/30 border-[#10283F]'
+                    ev.tier === 'saved' ? 'bg-[#10283F]/60 border-[#D9B66F]/50' : 'bg-[#10283F]/30 border-[#10283F]'
                   }`}
                 >
                   {ev.imageUrl && (
@@ -287,12 +392,31 @@ export const NearYouPage: React.FC = () => {
                     />
                   )}
                   <div className="flex-1 min-w-0 space-y-1">
-                    {ev.matchedPodcast && (
+                    {(ev.matchedTitle || ev.matchedPodcast) && (
                       <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-[#D9B66F]">
-                        From your library: {ev.matchedPodcast}
+                        From your library: {ev.matchedTitle || ev.matchedPodcast}
                       </span>
                     )}
+                    {ev.badges && ev.badges.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {ev.badges.map((b) => (
+                          <span
+                            key={b}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-semibold border ${
+                              HIGHLIGHT_BADGES.includes(b)
+                                ? 'bg-[#D9B66F] border-[#D9B66F] text-[#091A2B]'
+                                : b === 'Comedy'
+                                  ? 'bg-transparent border-[#F7F2E9]/20 text-[#F7F2E9]/60'
+                                  : 'bg-[#091A2B] border-[#D9B66F]/40 text-[#D9B66F]'
+                            }`}
+                          >
+                            {b}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <h3 className="font-serif font-bold text-[#F7F2E9] leading-snug">{ev.name}</h3>
+                    {ev.reason && <p className="text-xs italic text-[#F7F2E9]/80">{ev.reason}</p>}
                     <p className="text-xs text-[#F7F2E9]/70">
                       {formatEventDate(ev.date, ev.time)}
                       {ev.moreDates ? ` · +${ev.moreDates} more ${ev.moreDates === 1 ? 'date' : 'dates'}` : ''}

@@ -1,8 +1,11 @@
-import React, { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { CatalogDisplayMetadata, MoodSettings, MediaType, SavedMediaItem } from '../types';
 import { getUserRatingFeedback, getUserSwipeHistory, saveMediaItem } from '../lib/mediaService';
-import { Sparkles, Sliders, Film, Tv, BookOpen, Radio, Bookmark, Check, Info, Clock, AlertCircle } from 'lucide-react';
+import { describeDiscoverySignal } from '../lib/moodSignal';
+import { Sparkles, Sliders, Film, Tv, BookOpen, Radio, Bookmark, Check, Info, AlertCircle, Shuffle, Target } from 'lucide-react';
+
+const RESULT_LIMIT = 12;
 
 interface RecommendationCardItem extends CatalogDisplayMetadata {
   id: string;
@@ -19,6 +22,7 @@ interface RecommendationCardItem extends CatalogDisplayMetadata {
   compatibilityScore: number;
   source?: SavedMediaItem['source'];
   aiExplanation: string;
+  moodMatch?: string;
 }
 
 function durationLabel(item: RecommendationCardItem) {
@@ -66,6 +70,11 @@ export const DiscoverPage: React.FC = () => {
   const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
   const [selectedDetail, setSelectedDetail] = useState<RecommendationCardItem | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [shuffling, setShuffling] = useState(false);
+  // Everything shown since the last "Find" press, so Shuffle never repeats a title.
+  const shownIds = useRef<Set<string>>(new Set());
+  const nextCatalogPage = useRef(2);
+  const signal = useMemo(() => describeDiscoverySignal(mood), [mood]);
 
   const toggleFormat = (format: MediaType) => {
     if (selectedFormats.includes(format)) {
@@ -85,10 +94,15 @@ export const DiscoverPage: React.FC = () => {
     }
   };
 
-  const handleFindPlotTwist = async () => {
-    setLoading(true);
+  const requestRecommendations = async (mode: 'new' | 'shuffle') => {
+    const isShuffle = mode === 'shuffle';
+    if (isShuffle) setShuffling(true);
+    else setLoading(true);
     setStatusMessage(null);
-    setRecommendations([]);
+    if (!isShuffle) {
+      setRecommendations([]);
+      shownIds.current = new Set();
+    }
 
     try {
       const [ratingFeedback, swipeHistory] = user
@@ -102,11 +116,14 @@ export const DiscoverPage: React.FC = () => {
           tasteProfile: userProfile?.tasteProfile,
           ratingFeedback,
           // The server derives live format/genre signals from these persisted
-          // decisions before asking Gemini to rank verified catalog titles.
+          // decisions before ranking verified catalog titles.
           swipeHistory,
           formats: selectedFormats,
           maxDurationMinutes: durationLimit > 0 ? durationLimit : undefined,
           streamingServices: selectedStreamers.length > 0 ? selectedStreamers : undefined,
+          resultLimit: RESULT_LIMIT,
+          catalogPage: isShuffle ? nextCatalogPage.current : 1,
+          excludedMediaIds: isShuffle ? [...shownIds.current].slice(-500) : [],
         }),
       });
 
@@ -115,16 +132,27 @@ export const DiscoverPage: React.FC = () => {
       }
 
       const data = await response.json();
-      const results = data.results || [];
+      const results: RecommendationCardItem[] = Array.isArray(data.results) ? data.results : [];
+      if (typeof data.nextCatalogPage === 'number') nextCatalogPage.current = data.nextCatalogPage;
+
+      if (isShuffle && results.length === 0) {
+        setStatusMessage('You’ve seen every match for these settings. Try moving a slider or adding a format.');
+        return;
+      }
+      results.forEach((item) => shownIds.current.add(item.id));
       setRecommendations(results);
       if (results.length === 0) setStatusMessage('No titles match these filters. Try expanding your search.');
     } catch (err) {
       console.error('Failed to get recommendations:', err);
       setStatusMessage('Failed to fetch recommendations. Please try again.');
     } finally {
-      setLoading(false);
+      if (isShuffle) setShuffling(false);
+      else setLoading(false);
     }
   };
+
+  const handleFindPlotTwist = () => requestRecommendations('new');
+  const handleShuffle = () => requestRecommendations('shuffle');
 
   const handleSaveToLibrary = async (item: RecommendationCardItem) => {
     if (!user) {
@@ -282,6 +310,41 @@ export const DiscoverPage: React.FC = () => {
           </div>
         </div>
 
+        {/* Your discovery signal */}
+        <div className="bg-[#091A2B]/60 border border-[#D9B66F]/25 rounded-xl p-4 sm:p-5 space-y-3" aria-live="polite">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[#D9B66F]">
+            <Target className="w-3.5 h-3.5" />
+            <span>Your discovery signal</span>
+          </div>
+          <p className="text-sm text-[#F7F2E9] font-medium">{signal.headline}</p>
+          <div className="flex flex-wrap gap-2">
+            {signal.lines.map((line) => (
+              <span
+                key={line.key}
+                className={`px-2.5 py-1 rounded-md text-[11px] border ${
+                  line.strength === 2
+                    ? 'bg-[#D9B66F] border-[#D9B66F] text-[#091A2B] font-semibold'
+                    : line.strength === 1
+                      ? 'bg-[#10283F] border-[#D9B66F]/60 text-[#D9B66F]'
+                      : 'bg-[#10283F]/40 border-[#10283F] text-[#F7F2E9]/60'
+                }`}
+              >
+                {line.label}: {line.text}
+              </span>
+            ))}
+          </div>
+          {(signal.favoring.length > 0 || signal.avoiding.length > 0) && (
+            <ul className="text-xs text-[#F7F2E9]/75 space-y-1">
+              {signal.favoring.length > 0 && (
+                <li><span className="text-[#F7F2E9] font-semibold">Ranking favors:</span> {signal.favoring.join('; ')}.</li>
+              )}
+              {signal.avoiding.length > 0 && (
+                <li><span className="text-[#F7F2E9] font-semibold">Steering away from:</span> {signal.avoiding.join('; ')}.</li>
+              )}
+            </ul>
+          )}
+        </div>
+
         {/* Media Formats & Filters */}
         <div className="pt-4 border-t border-[#10283F] flex flex-col md:flex-row gap-6 items-start md:items-center justify-between">
           {/* Format selection */}
@@ -402,16 +465,26 @@ export const DiscoverPage: React.FC = () => {
       {/* Recommendations Grid */}
       {recommendations.length > 0 && (
         <div className="space-y-6">
-          <div className="flex items-center justify-between border-b border-[#10283F] pb-4">
-            <h2 className="text-2xl font-serif font-bold text-[#F7F2E9]">
-              Curated For Your Current Mood
-            </h2>
-            <span className="text-xs text-[#F7F2E9]/60 font-mono">
-              {recommendations.length} Matches
-            </span>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#10283F] pb-4">
+            <div>
+              <h2 className="text-2xl font-serif font-bold text-[#F7F2E9]">
+                Curated For Your Current Mood
+              </h2>
+              <span className="text-xs text-[#F7F2E9]/60 font-mono">
+                {recommendations.length} Matches · {shownIds.current.size} shown this session
+              </span>
+            </div>
+            <button
+              onClick={handleShuffle}
+              disabled={shuffling || loading}
+              className="self-start sm:self-auto flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider border border-[#D9B66F] text-[#D9B66F] hover:bg-[#D9B66F] hover:text-[#091A2B] transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <Shuffle className={`w-4 h-4 ${shuffling ? 'animate-spin' : ''}`} />
+              <span>{shuffling ? 'Shuffling…' : `Shuffle ${RESULT_LIMIT} new picks`}</span>
+            </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {recommendations.map((item) => {
               const isSaved = savedIds[item.id];
               return (
@@ -452,6 +525,13 @@ export const DiscoverPage: React.FC = () => {
                       <p className="text-xs text-[#F7F2E9]/70 line-clamp-2 leading-relaxed pt-1">
                         {item.overview}
                       </p>
+
+                      {item.moodMatch && (
+                        <p className="inline-flex items-start gap-1.5 text-[11px] font-semibold text-[#091A2B] bg-[#D9B66F] rounded-md px-2 py-1 leading-snug">
+                          <Target className="w-3 h-3 mt-0.5 shrink-0" />
+                          <span>{item.moodMatch}</span>
+                        </p>
+                      )}
 
                       {/* AI Reasoning Box */}
                       <div className="bg-[#10283F]/60 border border-[#D9B66F]/20 rounded-xl p-3 text-xs text-[#D9B66F] space-y-1">

@@ -1,9 +1,23 @@
-// "Near You" data: live podcast shows/events (Ticketmaster Discovery API) and nearby
+// "Near You" data: live story events (Ticketmaster Discovery API) and nearby
 // bookstores (Google Places API, New). Owner: Chloe.
+// What counts as a story event, and how it's matched and explained, lives in liveStories.ts.
 //
 // Needs TICKETMASTER_API_KEY and GOOGLE_PLACES_API_KEY in .env.
 // Privacy: a user's location is only used for the outgoing request. It's rounded to about
 // 100 m, never logged, and never saved to Firestore.
+
+import {
+  classifyEvent,
+  emptyStoryContext,
+  showKey,
+  type EventBadge,
+  type EventSignals,
+  type LiveKind,
+  type MatchTier,
+  type StoryContext,
+} from './liveStories';
+
+export type { EventBadge, LiveKind, MatchTier, StoryContext } from './liveStories';
 
 const TICKETMASTER_BASE = 'https://app.ticketmaster.com/discovery/v2/events.json';
 const PLACES_NEARBY_URL = 'https://places.googleapis.com/v1/places:searchNearby';
@@ -31,14 +45,20 @@ export interface LocalEvent {
   category?: string;
   priceRange?: string;
   matchedPodcast?: string; // set when the event matches a podcast in the user's library
-  kind: 'podcast' | 'comedy'; // 'comedy' = shown because no podcast shows were found nearby
+  matchedTitle?: string; // the saved podcast, book, author, movie or show it matched
+  kind: LiveKind;
+  badges?: EventBadge[];
+  tier?: MatchTier;
+  reason?: string; // plain-language "why this event"
   moreDates?: number; // other nights of the same show that were collapsed into this card
 }
 
 export interface LiveEventsResult {
   events: LocalEvent[];
-  // true when no live podcast shows were found, so these are nearby comedy shows instead
+  // true when nothing matched a saved title or a clearly labeled adaptation
   fallback: boolean;
+  // true when comedy shows were added because few story events were found
+  comedyIncluded?: boolean;
 }
 
 export interface Bookstore {
@@ -102,10 +122,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Ticketmaster lists each night of a run as its own event. Keep the first card per show
 // (input should already be in the order to keep) and count the other nights in moreDates.
-export function collapseRuns(events: LocalEvent[]): LocalEvent[] {
-  const byName = new Map<string, LocalEvent>();
+export function collapseRuns<T extends LocalEvent>(events: T[]): Array<T & Pick<LocalEvent, 'moreDates'>> {
+  const byName = new Map<string, T & Pick<LocalEvent, 'moreDates'>>();
   for (const ev of events) {
-    const key = ev.name.trim().toLowerCase().replace(/\s+/g, ' ');
+    const key = showKey(ev.name) || ev.id;
     const first = byName.get(key);
     if (first) first.moreDates = (first.moreDates || 0) + 1;
     else byName.set(key, { ...ev });
@@ -141,7 +161,15 @@ interface RawTmEvent {
   dates?: { start?: { localDate?: string; localTime?: string } };
   images?: Array<{ url: string; width?: number; ratio?: string }>;
   priceRanges?: Array<{ min?: number; max?: number; currency?: string }>;
-  classifications?: Array<{ segment?: { name?: string }; genre?: { name?: string } }>;
+  info?: string;
+  pleaseNote?: string;
+  description?: string;
+  classifications?: Array<{
+    primary?: boolean;
+    segment?: { name?: string };
+    genre?: { name?: string };
+    subGenre?: { name?: string };
+  }>;
   distance?: number;
   _embedded?: {
     venues?: Array<{
@@ -171,7 +199,7 @@ export function mapTicketmasterEvent(ev: RawTmEvent, from?: { lat: number; lng: 
   const genre = cls?.genre?.name && cls.genre.name !== 'Undefined' ? cls.genre.name : undefined;
   return {
     id: ev.id,
-    kind: 'podcast',
+    kind: /podcast/i.test(ev.name) ? 'podcast' : 'other',
     name: ev.name,
     url: ev.url,
     date: ev.dates?.start?.localDate || '',
@@ -186,6 +214,23 @@ export function mapTicketmasterEvent(ev: RawTmEvent, from?: { lat: number; lng: 
       price?.min !== undefined
         ? `$${Math.round(price.min)}${price.max && price.max !== price.min ? `–$${Math.round(price.max)}` : ''}`
         : undefined,
+  };
+}
+
+const named = (value?: string) => (value && value !== 'Undefined' ? value : undefined);
+
+/** The listing details liveStories.ts looks at. */
+export function eventSignals(ev: RawTmEvent, today = new Date()): EventSignals {
+  const cls = ev.classifications?.find((c) => c.primary) || ev.classifications?.[0];
+  const date = ev.dates?.start?.localDate;
+  const daysAway = date ? Math.round((Date.parse(`${date}T12:00:00`) - today.getTime()) / 86_400_000) : undefined;
+  return {
+    name: ev.name,
+    details: [ev.info, ev.pleaseNote, ev.description].filter(Boolean).join(' ').slice(0, 1500),
+    segment: named(cls?.segment?.name),
+    genre: named(cls?.genre?.name),
+    subGenre: named(cls?.subGenre?.name),
+    daysAway: Number.isFinite(daysAway) ? daysAway : undefined,
   };
 }
 
@@ -222,54 +267,125 @@ async function ticketmasterSearch(
   });
 }
 
+interface SearchPlan {
+  keyword?: string;
+  classificationName?: string;
+  size: number;
+  podcastSearch?: boolean;
+}
+
+const MAX_EVENTS = 40;
+const MIN_STORY_EVENTS = 6; // fewer than this and comedy is added as a last resort
+const MAX_SAVED_SEARCHES = 6;
+
+/** Saved titles worth their own keyword search, best signals first. */
+function savedSearches(ctx: StoryContext): SearchPlan[] {
+  const picks: string[] = [];
+  const take = (list: string[], n: number) => list.map((t) => t.trim()).filter((t) => t.length > 3).slice(0, n).forEach((t) => picks.push(t));
+  take(ctx.podcasts, 2);
+  take(ctx.books.map((b) => b.title), 2);
+  take(ctx.books.map((b) => b.author || '').filter((a) => a.split(' ').length >= 2), 1);
+  take([...ctx.movies.slice(0, 1), ...ctx.shows.slice(0, 1)], 2);
+  return [...new Set(picks)].slice(0, MAX_SAVED_SEARCHES).map((keyword) => ({ keyword: keyword.split(':')[0], size: 10 }));
+}
+
+/** The story searches every request runs (results are cached for 10 minutes per place). */
+const STORY_SEARCHES: SearchPlan[] = [
+  { keyword: 'podcast', size: 30, podcastSearch: true },
+  { classificationName: 'Theatre', size: 40 },
+  { classificationName: 'Film', size: 30 },
+  { keyword: 'screening', size: 15 },
+  { keyword: 'in concert', classificationName: 'Classical', size: 15 }, // movies with a live orchestra
+  { keyword: 'immersive', size: 20 },
+  { keyword: 'murder mystery', size: 15 },
+  { keyword: 'author', size: 15 },
+];
+
+export interface LiveEventsDeps {
+  /** Pause between batches; Ticketmaster allows about 5 requests per second. */
+  pauseMs?: number;
+  today?: Date;
+}
+
 /**
- * Live podcast shows near a location. Searches "podcast" plus up to 5 podcast titles
- * from the user's library, so a live taping of a show they listen to rises to the top.
- * If nothing comes back, returns nearby comedy shows with fallback: true.
+ * Live events that bring stories to life near a location: podcast tapings, theatre and
+ * musicals, screenings, author events, readings, and immersive or mystery experiences.
+ * Events matching the user's saved podcasts, books, authors, movies and shows rank first,
+ * then clearly labeled adaptations, then story events, then taste matches. Comedy is only
+ * added when fewer than six story events turn up.
  */
-export async function getLiveEvents(loc: LocationQuery, libraryPodcasts: string[] = []): Promise<LiveEventsResult> {
+export async function getLiveEvents(
+  loc: LocationQuery,
+  context: Partial<StoryContext> | string[] = {},
+  deps: LiveEventsDeps = {},
+): Promise<LiveEventsResult> {
   if (!process.env.TICKETMASTER_API_KEY) throw new Error('not_configured');
   if (!hasCoords(loc) && !loc.city) throw new Error('location_required');
 
+  const ctx: StoryContext = Array.isArray(context)
+    ? { ...emptyStoryContext(), podcasts: context }
+    : { ...emptyStoryContext(), ...context };
   const from = hasCoords(loc) ? { lat: loc.lat, lng: loc.lng } : undefined;
-  const titles = libraryPodcasts.map((t) => t.trim()).filter((t) => t.length > 1).slice(0, 5);
+  const pauseMs = deps.pauseMs ?? 1100;
+  const today = deps.today ?? new Date();
 
-  const results = new Map<string, LocalEvent>();
-
-  // Shows from the user's own podcasts first. Ticketmaster allows ~5 requests/second,
-  // so these run one after another with a short pause.
-  for (const title of titles) {
-    try {
-      const events = await ticketmasterSearch(title, loc, 5);
-      for (const ev of events) {
-        if (!ev.name.toLowerCase().includes(title.toLowerCase().split(':')[0])) continue;
-        if (!results.has(ev.id)) results.set(ev.id, { ...mapTicketmasterEvent(ev, from), matchedPodcast: title });
-      }
-    } catch (err) {
-      console.error('Ticketmaster title search failed:', (err as Error).message);
+  // Raw listings by id, remembering whether the "podcast" search found them.
+  const raw = new Map<string, { ev: RawTmEvent; podcastSearch: boolean }>();
+  let failures = 0;
+  const run = async (plans: SearchPlan[]) => {
+    for (let i = 0; i < plans.length; i += 4) {
+      if (i > 0 && pauseMs) await sleep(pauseMs);
+      await Promise.all(plans.slice(i, i + 4).map(async (plan) => {
+        try {
+          const events = await ticketmasterSearch(plan.keyword || '', loc, plan.size, plan.classificationName);
+          for (const ev of events) {
+            const seen = raw.get(ev.id);
+            raw.set(ev.id, { ev, podcastSearch: Boolean(seen?.podcastSearch || plan.podcastSearch) });
+          }
+        } catch (err) {
+          failures += 1;
+          console.error('Ticketmaster search failed:', (err as Error).message);
+        }
+      }));
     }
-    await sleep(250);
+  };
+
+  const plans = [...savedSearches(ctx), ...STORY_SEARCHES];
+  await run(plans);
+  if (failures === plans.length) throw new Error('Ticketmaster is unavailable right now');
+
+  const classify = (allowComedy: boolean) => {
+    const out: Array<LocalEvent & { score: number }> = [];
+    for (const { ev, podcastSearch } of raw.values()) {
+      const match = classifyEvent({ ...eventSignals(ev, today), fromPodcastSearch: podcastSearch }, ctx, { allowComedy });
+      if (!match) continue;
+      out.push({
+        ...mapTicketmasterEvent(ev, from),
+        kind: match.kind,
+        badges: match.badges,
+        tier: match.tier,
+        reason: match.reason,
+        matchedTitle: match.matchedTitle,
+        matchedPodcast: match.matchedPodcast,
+        score: match.score,
+      });
+    }
+    return out;
+  };
+
+  let scored = classify(false);
+  let comedyIncluded = false;
+  if (collapseRuns(scored).length < MIN_STORY_EVENTS) {
+    // Last resort only: comedy isn't a story event, so it always ranks below them.
+    await run([{ classificationName: 'Comedy', size: 20 }]);
+    scored = classify(true);
+    comedyIncluded = scored.some((e) => e.tier === 'comedy');
   }
 
-  // Then general live podcast shows.
-  const general = await ticketmasterSearch('podcast', loc, 30);
-  for (const ev of general) {
-    if (!results.has(ev.id)) results.set(ev.id, mapTicketmasterEvent(ev, from));
-  }
-
-  if (results.size > 0) {
-    const sorted = [...results.values()].sort((a, b) => {
-      if (Boolean(a.matchedPodcast) !== Boolean(b.matchedPodcast)) return a.matchedPodcast ? -1 : 1;
-      return a.date.localeCompare(b.date);
-    });
-    return { events: collapseRuns(sorted), fallback: false };
-  }
-
-  // No live podcast shows nearby (common in smaller cities), so show nearby comedy instead.
-  // Comedy is the closest match: many touring podcasts are booked as comedy shows.
-  const comedy = await ticketmasterSearch('', loc, 20, 'Comedy');
-  const events = collapseRuns(comedy.map((ev) => ({ ...mapTicketmasterEvent(ev, from), kind: 'comedy' as const })));
-  return { events: events.slice(0, 12), fallback: true };
+  const ranked = scored.sort((a, b) => b.score - a.score || (a.date || '9999').localeCompare(b.date || '9999'));
+  const events = collapseRuns(ranked).slice(0, MAX_EVENTS).map(({ score: _score, ...ev }) => ev as LocalEvent);
+  const fallback = !events.some((e) => e.tier === 'saved' || e.tier === 'adaptation');
+  return { events, fallback, comedyIncluded };
 }
 
 // ---------- Google Places: bookstores ----------
