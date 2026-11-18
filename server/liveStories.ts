@@ -124,8 +124,11 @@ export function categorize(sig: EventSignals): Set<Category> {
 
   if (/\bpodcast\b/.test(text) || sig.fromPodcastSearch) cats.add('podcast');
 
-  const liveScore = /\b(live to film|live score|film with live orchestra|movie in concert|film in concert|in concert)\b/.test(name)
-    && (segment === 'film' || /\b(film|movie|orchestra|symphony|philharmonic|pops)\b/.test(text) || /classical/.test(genre));
+  // A movie shown with a live orchestra. "In concert" alone isn't enough: singers tour "in concert"
+  // too, so the listing's name has to point at a film or an orchestra.
+  const liveScore = /\b(live to film|live score|film with live orchestra|movie in concert|film in concert)\b/.test(name)
+    || (/\bin concert\b/.test(name)
+      && (segment === 'film' || /\b(film|movie|orchestra|symphony|philharmonic|pops|part one|part two|part 1|part 2)\b/.test(name)));
   if (segment === 'film' || liveScore
     || /\b(screening|screenings|cinema|film festival|35 ?mm|70 ?mm|double feature|sing ?a ?long|quote ?a ?long|premiere)\b/.test(name)) {
     cats.add('screening');
@@ -141,14 +144,19 @@ export function categorize(sig: EventSignals): Set<Category> {
   }
   if (/\b(reading|readings|storytelling|story ?slam|the moth|live lit)\b/.test(name)) cats.add('reading');
 
+  // Ticket descriptions use words like "immersive" and "experience" loosely (comedy nights,
+  // concerts, holiday shows), so the description only counts for exhibitions and attractions.
   const experienceSegment = /arts and theatre|miscellaneous|film/.test(segment);
-  if ((/\b(immersive|escape room)\b/.test(text) || /\binteractive (theatre|theater|experience|show|adventure)\b/.test(text)
+  const attraction = segment === 'miscellaneous' && !/comedy/.test(genre) && !cats.has('podcast');
+  const immersiveWords = /\b(immersive|escape room)\b|\binteractive (theatre|theater|experience|show|adventure)\b/;
+  if ((immersiveWords.test(name) || (attraction && immersiveWords.test(text))
     || (experienceSegment && /\b(experience|exhibition)\b/.test(name))) && !PACKAGE.test(name)) {
     cats.add('immersive');
   }
 
-  if (/\b(murder mystery|mystery dinner|whodunit|whodunnit|detective|sherlock|murder on the|agatha christie|escape room)\b/.test(text)
-    || /\bclue\b/.test(name)) {
+  const mysteryWords = /\b(murder mystery|mystery dinner|whodunit|whodunnit|detective|sherlock|murder on the|agatha christie|escape room)\b/;
+  if (mysteryWords.test(name) || /\bclue\b/.test(name)
+    || (mysteryWords.test(text) && /theatre|theater|miscellaneous/.test(`${segment} ${genre}`) && !/comedy/.test(genre))) {
     cats.add('mystery');
   }
 
@@ -179,12 +187,12 @@ export function matchSaved(sig: EventSignals, ctx: StoryContext, cats: Set<Categ
   const text = normalizeText(`${sig.name} ${sig.details || ''}`);
   const segment = normalizeText(sig.segment);
   // A band called "Dune" or a team called "Gone Girl FC" is not your book.
-  const storySegment = cats.size > 0 || /arts and theatre|film|miscellaneous/.test(segment);
+  const storySegment = cats.size > 0 || /arts and theatre|film|miscellaneous/.test(segment) || /\bin concert\b/.test(name);
   if (!storySegment || segment === 'sports') return undefined;
 
   for (const title of ctx.podcasts) {
     const t = usableTitle(title);
-    if (t && hasPhrase(name, t)) return { type: 'podcast', title };
+    if (t && hasPhrase(name, t) && (!/music/.test(segment) || cats.has('podcast'))) return { type: 'podcast', title };
   }
   for (const book of ctx.books) {
     const author = normalizeText(book.author);
@@ -199,7 +207,10 @@ export function matchSaved(sig: EventSignals, ctx: StoryContext, cats: Set<Categ
   }
   for (const movie of ctx.movies) {
     const t = usableTitle(movie);
-    if (t && hasPhrase(name, t) && (!/music/.test(segment) || cats.has('screening'))) return { type: 'movie', title: movie };
+    // "<a saved movie> in Concert" is that movie with a live orchestra, even when it's filed under Music.
+    if (t && hasPhrase(name, t) && (!/music/.test(segment) || cats.has('screening') || /\bin concert\b/.test(name))) {
+      return { type: 'movie', title: movie };
+    }
   }
   for (const show of ctx.shows) {
     const t = usableTitle(show);
@@ -291,7 +302,8 @@ export function classifyEvent(sig: EventSignals, ctx: StoryContext, opts: { allo
   const adaptation = explicitAdaptation(`${sig.name} ${sig.details || ''}`);
   const taste = tasteMatch(sig, cats, ctx);
   const tasteLine = taste.aspects.length ? `Matches your taste for ${joinWords(taste.aspects.slice(0, 2))}.` : '';
-  const soon = sig.daysAway !== undefined && sig.daysAway >= 0 && sig.daysAway <= 30 ? 10 : 0;
+  // -1 allows for the server's clock (UTC) already being on tomorrow during a US evening.
+  const soon = sig.daysAway !== undefined && sig.daysAway >= -1 && sig.daysAway <= 30 ? 10 : 0;
 
   const badges: EventBadge[] = [];
   const add = (b: EventBadge) => { if (!badges.includes(b)) badges.push(b); };
