@@ -221,3 +221,45 @@ test('story context from the browser is capped and cleaned', () => {
   assert.deepEqual(context.shows, []);
   assert.equal(context.mood?.darkness, 5);
 });
+
+// ---------- Regressions from real New York listings (Nov 17) ----------
+
+test('"in concert" only counts as a screening when it points at a film or an orchestra', () => {
+  const singers = classifyEvent({ name: 'Il Volo LIVE IN CONCERT', segment: 'Music', genre: 'Classical' }, ctx());
+  assert.equal(singers, null, 'a vocal group on tour is not a movie screening');
+
+  const potter = classifyEvent({ name: 'New York Philharmonic w/ Harry Potter and the Sorcerers Stone in Concert', segment: 'Music', genre: 'Classical' }, ctx());
+  assert.ok(potter?.badges.includes('Screening'));
+  const wicked = classifyEvent({ name: 'Wicked: Part One in Concert', segment: 'Music', genre: 'Classical' }, ctx());
+  assert.ok(wicked?.badges.includes('Screening'));
+
+  // A saved movie's title plus "in Concert" is that movie with an orchestra...
+  const saved = classifyEvent({ name: 'Harry Potter and the Sorcerer’s Stone in Concert', segment: 'Music', genre: 'Pop' },
+    ctx({ movies: ['Harry Potter and the Sorcerer’s Stone'] }));
+  assert.equal(saved?.tier, 'saved');
+  // ...but a band that happens to share a saved podcast's name is not that podcast.
+  assert.equal(classifyEvent({ name: 'Serial in Concert', segment: 'Music', genre: 'Pop' }, ctx({ podcasts: ['Serial'] })), null);
+});
+
+test('loose "immersive" or "experience" wording in a description does not make an event Immersive', () => {
+  const comedy = classifyEvent({
+    name: 'A Very Good+ Night of Comedy Featuring Jerry Seinfeld + Friends',
+    details: 'An immersive night of laughs. The ultimate comedy experience.',
+    segment: 'Arts & Theatre',
+    genre: 'Comedy',
+  }, ctx());
+  assert.equal(comedy, null, 'comedy is still only a last resort');
+
+  const rockettes = classifyEvent(theatre('Christmas Spectacular Starring The Radio City Rockettes', 'An immersive holiday experience.'), ctx());
+  assert.ok(rockettes);
+  assert.deepEqual(rockettes.badges, ['On Stage']);
+
+  const museum = classifyEvent({ name: 'The Banksy Museum New York!', details: 'An immersive exhibition.', segment: 'Miscellaneous', genre: 'Miscellaneous' }, ctx());
+  assert.ok(museum?.badges.includes('Immersive'), 'attractions can still be immersive from their description');
+});
+
+test('tonight’s shows keep their “coming up soon” boost after 6 PM Central', () => {
+  const tonight = classifyEvent({ ...theatre('Hadestown'), daysAway: -1 }, ctx());
+  const nextMonth = classifyEvent({ ...theatre('Hadestown'), daysAway: 45 }, ctx());
+  assert.ok(tonight && nextMonth && tonight.score > nextMonth.score);
+});
