@@ -355,7 +355,7 @@ export const GroupsPage: React.FC = () => {
                     Find Group Compromise Pick
                   </h4>
                   <p className="text-xs text-[#F7F2E9]/70">
-                    Preview picks based on your own preferences. Group-wide matching requires Ben's backend integration.
+                    Picks for your group, starting from your taste. Matching across every member’s taste is coming soon.
                   </p>
                 </div>
                 <button
